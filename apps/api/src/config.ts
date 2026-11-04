@@ -8,7 +8,7 @@ const schema = z.object({
   MONGODB_URI: z.string().min(1),
   JWT_SECRET: z.string().min(32, 'JWT_SECRET must be at least 32 characters'),
   JWT_EXPIRES_IN: z.string().default('8h'),
-  CLIENT_ORIGIN: z.string().url().default('http://localhost:5173'),
+  CLIENT_ORIGIN: z.string().url().default(process.env.RENDER_EXTERNAL_URL ?? 'http://localhost:5173'),
   CURRENCY: z.string().regex(/^[A-Z]{3}$/).default('BDT'),
   CLOUDINARY_CLOUD_NAME: z.string().default(''),
   CLOUDINARY_API_KEY: z.string().default(''),

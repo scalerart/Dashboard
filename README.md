@@ -10,7 +10,7 @@ A full-stack business management workspace for MAA Offset Press. This repository
 - Orders/jobs, invoices with PDF/email actions, customer payments, expenses, other income, inventory adjustments, editable supplier/product records, purchases, and supplier settlements backed by API workflows.
 - Ledger-derived cash/bank movement, date-filtered reports with CSV export, integration readiness, and owner-only data backup export.
 - Cookie-based authentication, password hashing, input validation, API rate limiting, and protected dashboard endpoints.
-- MongoDB-backed authentication rate limits shared across Vercel serverless instances.
+- MongoDB-backed authentication rate limits shared across application instances.
 - Public business registration with email verification, one isolated tenant per business, and owner-specific business names.
 - Tenant-scoped in-app alerts for overdue invoices and low inventory, linked directly to the relevant work areas.
 - Tenant-scoped MongoDB queries, aggregations, unique business document numbers, inventory SKUs, idempotency keys, and backups.
@@ -72,8 +72,8 @@ Integration tests require `MONGODB_TEST_URI` pointing to a disposable, transacti
 - `GET /api/invoices/:id/pdf`, `POST /api/invoices/:id/email`, `GET /api/backup/export` — document, email, and owner-only backup actions
 
 See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the architecture and accounting boundaries, and [docs/IMPLEMENTATION_CHECKLIST.md](./docs/IMPLEMENTATION_CHECKLIST.md) for phase status.
-For the Vercel + MongoDB Atlas production path, see the [deployment runbook](./docs/DEPLOYMENT.md).
+For the Render + MongoDB Atlas production path, see the [deployment runbook](./docs/DEPLOYMENT.md).
 
 ## Deployment
 
-Deploy the React frontend and Express API together from the repository root to Vercel. The API runs as a serverless function at `/api/*`; it initializes a cached MongoDB connection and ensures indexes for a fresh tenant-ready database. Existing installations must run the explicit tenant migration after a verified snapshot; serverless startup fails closed if unmigrated legacy data is found. Configure Vercel environment variables and Atlas transaction/network access using the [deployment runbook](./docs/DEPLOYMENT.md). This workspace has not been deployed to the user's Vercel or Atlas accounts.
+Deploy one Render Web Service from the repository root. Express serves the built React app and MongoDB-backed API from the same origin; the app validates the production web build at startup and derives its default allowed origin from Render's `RENDER_EXTERNAL_URL`. Existing installations must run the explicit tenant migration after a verified snapshot; startup fails closed if unmigrated legacy data is found. Configure Render environment variables and Atlas transaction/network access using the [deployment runbook](./docs/DEPLOYMENT.md). This workspace has not been deployed to Render or Atlas.

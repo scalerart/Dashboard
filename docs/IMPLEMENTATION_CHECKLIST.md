@@ -17,7 +17,7 @@ Updated: 2026-11-04
 - [x] Public business registration with hashed email-verification tokens and business-specific workspaces.
 - [x] Add an opt-in local-only terminal verification link for demos without SMTP; production configuration rejects the option.
 - [x] Block remote MongoDB access from local development by default to prevent accidental production database migrations.
-- [x] Persist authentication rate-limit counters in MongoDB so Vercel function instances share the limit.
+- [x] Persist authentication rate-limit counters in MongoDB so application instances share the limit.
 - [x] Customer directory with search, status filtering, pagination, create/edit, and archive/restore.
 - [x] Shared responsive pages for orders, invoices, payments, expenses, other income, inventory, suppliers, and purchases.
 - [x] Accounts, reports/CSV export, and settings/backup screens.
@@ -76,11 +76,11 @@ Updated: 2026-11-04
 - [x] API and web production builds/type checks pass.
 - [x] API and web lint pass.
 - [x] API health endpoint reports MongoDB readiness and returns 503 when disconnected.
-- [x] Add Vercel SPA and serverless API routing, cached MongoDB startup, bounded Vercel uploads/exports, an explicit tenant-migration command, and document the Vercel/Atlas deployment sequence.
+- [x] Add Vercel serverless routing and Render single-origin SPA/API serving, bounded uploads/exports, an explicit tenant-migration command, and document the Render/Atlas deployment sequence.
 - [ ] Run production-like authenticated browser checks against a non-production test account.
 - [ ] Configure production SMTP before enabling email-verified signup; confirm backup/restore procedures, MongoDB access controls, HTTPS, monitoring, and deployment secrets.
 - [ ] Deploy to the user's hosting provider; deployment access and production environment details are not available in this workspace.
 
 ## Current next step
 
-Provide verified source records before accounting reconciliation; run tenant-isolation and accounting integration tests against a disposable replica set; configure production SMTP, Atlas network controls/backups, and Vercel secrets; then complete authenticated browser tests and deployment. Take a verified snapshot before the first tenant-migration deployment. Large direct-to-Cloudinary uploads, workspace-level restore, scheduled reports, and opening-balance reconciliation are not implemented. Do not treat net ledger movement as available cash or profit.
+Provide verified source records before accounting reconciliation; run tenant-isolation and accounting integration tests against a disposable replica set; configure production SMTP, Atlas network controls/backups, and Render secrets; then complete authenticated browser tests and deployment. Take a verified snapshot before the first tenant-migration deployment. Large direct-to-Cloudinary uploads, workspace-level restore, scheduled reports, and opening-balance reconciliation are not implemented. Do not treat net ledger movement as available cash or profit.

@@ -1,0 +1,35 @@
+services:
+  - type: web
+    name: maa-offset-press
+    runtime: node
+    region: singapore
+    buildCommand: npm ci --include=dev && npm run build
+    startCommand: npm run start --workspace @maa/api
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TRUST_PROXY_HOPS
+        value: "1"
+      - key: CURRENCY
+        value: BDT
+      - key: VITE_CURRENCY
+        value: BDT
+      - key: DEV_EMAIL_VERIFICATION_LINKS
+        value: "false"
+      - key: ALLOW_REMOTE_DEVELOPMENT_DATABASE
+        value: "false"
+      - key: MONGODB_URI
+        sync: false
+      - key: JWT_SECRET
+        generateValue: true
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false

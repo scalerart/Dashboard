@@ -251,7 +251,7 @@ function collectBackupArchive(archive: ZipArchive) {
       if (byteLength > maximumBytes) {
         settled = true
         archive.abort()
-        reject(new BusinessError(413, 'Workspace backup exceeds Vercel’s 4 MB download limit. Use Atlas backups for full recovery.'))
+        reject(new BusinessError(413, 'Workspace backup exceeds the 4 MB download limit. Export smaller workspaces or use Atlas backups for full recovery.'))
         return
       }
       chunks.push(chunk)
