@@ -64,7 +64,7 @@ async function sendVerificationEmail(input: { userId: string; email: string; nam
   await EmailVerification.findOneAndUpdate(
     { user: input.userId },
     { $set: { tokenHash: hashVerificationToken(token), expiresAt: new Date(Date.now() + 60 * 60 * 1000) } },
-    { upsert: true, new: true, setDefaultsOnInsert: true },
+    { upsert: true, returnDocument: 'after', setDefaultsOnInsert: true },
   )
   const verifyUrl = new URL('/verify', config.CLIENT_ORIGIN)
   verifyUrl.searchParams.set('token', token)
@@ -74,7 +74,7 @@ async function sendVerificationEmail(input: { userId: string; email: string; nam
 async function createBusinessOwner(input: z.infer<typeof setupSchema>) {
   const userId = new mongoose.Types.ObjectId()
   const businessId = new mongoose.Types.ObjectId()
-  await withTransaction(async (session) => {
+  return withTransaction(async (session) => {
     await Business.create([{ _id: businessId, name: input.businessName, owner: userId }], { session })
     await User.create([{
       _id: userId,
@@ -85,8 +85,8 @@ async function createBusinessOwner(input: z.infer<typeof setupSchema>) {
       emailVerified: false,
       role: 'owner',
     }], { session })
+    return userId
   })
-  return userId
 }
 
 function sessionCookie() {
@@ -165,7 +165,7 @@ authRouter.post('/verify-email', authAttemptLimiter, async (req, res, next) => {
       return User.findByIdAndUpdate(
         verification.user,
         { $set: { emailVerified: true } },
-        { new: true, session },
+        { returnDocument: 'after', session },
       )
     })
     if (!user) {

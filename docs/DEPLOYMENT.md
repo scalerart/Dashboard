@@ -60,7 +60,7 @@ Before entering real business data:
 4. Exercise create/list/edit/archive/search/pagination for customers and the relevant order, invoice, payment, expense, income, inventory, supplier, purchase, and account workflows.
 5. Verify invoice PDF/email, payment idempotency, due calculations, purchase stock/cost updates, reports/CSV, document upload/download (if Cloudinary is enabled), notification actions, and owner-only ZIP export.
 6. Test mobile, tablet, and desktop layouts. Review Atlas access/backup configuration, Render logs, SMTP deliverability, and service billing.
-7. Use a disposable replica-set database for `npm run test:integration`. It must not be production: the suite creates and drops a uniquely named `maa_offset_integration_test_*` database.
+7. Use a disposable replica-set database for `npm run test:integration`. It must not be production: the suite creates and drops a uniquely named `maa_offset_test_*` database.
 
 Do not treat deployment success or a healthy endpoint as proof of all accounting workflows. Reconcile test results and verified opening records with the business before using live financial data.
 

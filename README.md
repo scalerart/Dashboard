@@ -54,7 +54,7 @@ The application does not seed financial data. It does not yet support opening ba
 | `npm test` | Run API domain tests |
 | `npm run test:integration` | Run authenticated financial workflows against an isolated test database |
 
-Integration tests require `MONGODB_TEST_URI` pointing to a disposable, transaction-capable MongoDB test deployment—not production. They generate a uniquely named `maa_offset_integration_test_*` database and drop only that database when complete; they never use `MONGODB_URI` or the business database.
+Integration tests require `MONGODB_TEST_URI` pointing to a disposable, transaction-capable MongoDB test deployment—not production. They generate a uniquely named `maa_offset_test_*` database and drop only that database when complete; they never use `MONGODB_URI` or the business database.
 
 ## API
 

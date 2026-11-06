@@ -88,7 +88,7 @@ customersRouter.patch('/:id', async (req, res, next) => {
     const customer = await Customer.findByIdAndUpdate(
       req.params.id,
       { $set: input },
-      { new: true, runValidators: true },
+      { returnDocument: 'after', runValidators: true },
     ).lean()
     if (!customer) {
       res.status(404).json({ message: 'Customer not found.' })
@@ -121,7 +121,7 @@ customersRouter.patch('/:id/status', async (req, res, next) => {
     const customer = await Customer.findByIdAndUpdate(
       req.params.id,
       { $set: { status } },
-      { new: true, runValidators: true },
+      { returnDocument: 'after', runValidators: true },
     ).lean()
     if (!customer) {
       res.status(404).json({ message: 'Customer not found.' })

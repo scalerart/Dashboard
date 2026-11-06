@@ -1,6 +1,6 @@
 import 'dotenv/config'
 import assert from 'node:assert/strict'
-import { randomUUID } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 import { createServer } from 'node:net'
 import { createInterface } from 'node:readline'
 import type { Server } from 'node:http'
@@ -15,7 +15,7 @@ test('business workflows keep payments, inventory, reports, and ledger consisten
   const testUri = process.env.MONGODB_TEST_URI
   assert.ok(testUri)
   const testUrl = new URL(testUri)
-  const databaseName = `maa_offset_integration_test_${randomUUID().replaceAll('-', '')}`
+  const databaseName = `maa_offset_test_${randomUUID().replaceAll('-', '').slice(0, 20)}`
   testUrl.pathname = `/${databaseName}`
   process.env.MONGODB_URI = testUrl.toString()
   let server: Server | undefined
@@ -61,7 +61,7 @@ test('business workflows keep payments, inventory, reports, and ledger consisten
           if (line === '.') {
             readingMessage = false
             const token = message.match(/\/verify\?token=([A-Za-z0-9_-]+)/)?.[1]
-            if (token) lastVerificationToken = token
+            if (token) lastVerificationToken = token.slice(-43)
             message = ''
             socket.write('250 message accepted\r\n')
           } else {
@@ -108,6 +108,7 @@ test('business workflows keep payments, inventory, reports, and ledger consisten
     const { connectDatabase } = await import('./db.js')
     const { prepareTenantDatabase } = await import('./tenant-migration.js')
     const { app } = await import('./app.js')
+    const { EmailVerification, User } = await import('./models.js')
     await connectDatabase()
     assert.equal(mongoose.connection.db?.databaseName, databaseName)
     await prepareTenantDatabase()
@@ -120,26 +121,44 @@ test('business workflows keep payments, inventory, reports, and ledger consisten
     const unauthenticated = await request('/accounts/summary')
     assert.equal(unauthenticated.status, 401)
 
+    const ownerEmail = `test-${randomUUID()}@example.test`
+    const ownerPassword = `Test-${randomUUID()}-Strong`
     const setup = await request('/auth/setup', {
       method: 'POST',
-      body: { name: 'Integration Owner', businessName: 'Integration Business', email: `test-${randomUUID()}@example.test`, password: `Test-${randomUUID()}-Strong` },
+      body: { name: 'Integration Owner', businessName: 'Integration Business', email: ownerEmail, password: ownerPassword },
     })
     assert.equal(setup.status, 202)
     assert.ok(lastVerificationToken)
+    const tokenHash = createHash('sha256').update(lastVerificationToken).digest('hex')
+    const ownerRecord = await User.collection.findOne({ email: ownerEmail }, { projection: { _id: 1 } })
+    const savedVerification = ownerRecord
+      ? await EmailVerification.collection.findOne({ user: ownerRecord._id }, { projection: { tokenHash: 1 } })
+      : null
+    assert.ok(savedVerification && savedVerification.tokenHash === tokenHash, 'the verification email token must match the persisted one-time token hash')
     const setupVerification = await request('/auth/verify-email', {
       method: 'POST',
       body: { token: lastVerificationToken },
     })
-    assert.equal(setupVerification.status, 200)
+    assert.equal(setupVerification.status, 200, await setupVerification.clone().text())
     sessionCookie = setupVerification.headers.get('set-cookie')?.split(';')[0] ?? ''
+    assert.match(sessionCookie, /^maa_session=/)
+
+    const login = await request('/auth/login', {
+      method: 'POST',
+      body: { email: ownerEmail, password: ownerPassword },
+    })
+    assert.equal(login.status, 200)
+    sessionCookie = login.headers.get('set-cookie')?.split(';')[0] ?? ''
     assert.match(sessionCookie, /^maa_session=/)
 
     const customerResponse = await request('/customers', {
       method: 'POST',
       body: { name: 'Integration Customer', phone: '', email: '', address: '' },
     })
-    assert.equal(customerResponse.status, 201)
+    assert.equal(customerResponse.status, 201, await customerResponse.clone().text())
     const { item: customer } = await json<{ item: { id: string } }>(customerResponse)
+    const ownerCustomers = await request('/customers')
+    assert.deepEqual((await json<{ items: { id: string }[] }>(ownerCustomers)).items.map((item) => item.id), [customer.id])
 
     const secondPassword = `Test-${randomUUID()}-Strong`
     const secondEmail = `second-${randomUUID()}@example.test`
@@ -340,7 +359,7 @@ test('business workflows keep payments, inventory, reports, and ledger consisten
         if (mongoose.connection.readyState === 1) {
           const currentDbName = mongoose.connection.db?.databaseName ?? ''
           try {
-            if (currentDbName === databaseName && currentDbName.startsWith('maa_offset_integration_test_')) {
+            if (currentDbName === databaseName && currentDbName.startsWith('maa_offset_test_')) {
               await mongoose.connection.dropDatabase()
             }
           } finally {

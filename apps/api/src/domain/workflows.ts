@@ -18,7 +18,7 @@ export async function nextDocumentNumber(prefix: string, session?: ClientSession
   const counter = await Counter.findByIdAndUpdate(
     tenantCounterId,
     { $inc: { value: 1 } },
-    { upsert: true, new: true, ...(session ? { session } : {}) },
+    { upsert: true, returnDocument: 'after', ...(session ? { session } : {}) },
   )
   return `${prefix}-${String(counter.value).padStart(6, '0')}`
 }

@@ -178,7 +178,7 @@ businessRouter.patch('/orders/:id/status', async (req, res, next) => {
     }
     const { status } = orderStatusInput.parse(req.body)
     const order = await withTransaction(async (session) => {
-      const updated = await Order.findByIdAndUpdate(req.params.id, { $set: { status } }, { new: true, runValidators: true, session })
+      const updated = await Order.findByIdAndUpdate(req.params.id, { $set: { status } }, { returnDocument: 'after', runValidators: true, session })
       if (updated) await recordAudit(String(req.authUser!.id), 'status_changed', 'order', String(updated._id), `Updated ${updated.orderNumber} to ${status}`, session)
       return updated
     })
@@ -437,7 +437,7 @@ businessRouter.patch('/suppliers/:id', async (req, res, next) => {
     if (!mongoose.isValidObjectId(req.params.id)) { res.status(400).json({ message: 'Supplier ID is invalid.' }); return }
     const input = supplierInput.partial().parse(req.body)
     if (!Object.keys(input).length) { res.status(400).json({ message: 'Provide fields to update.' }); return }
-    const supplier = await Supplier.findByIdAndUpdate(req.params.id, { $set: input }, { new: true, runValidators: true })
+    const supplier = await Supplier.findByIdAndUpdate(req.params.id, { $set: input }, { returnDocument: 'after', runValidators: true })
     if (!supplier) { res.status(404).json({ message: 'Supplier not found.' }); return }
     await recordAudit(String(req.authUser!.id), 'updated', 'supplier', String(supplier._id), `Updated supplier ${supplier.name}`)
     res.json({ item: { id: String(supplier._id), name: supplier.name } })
@@ -448,7 +448,7 @@ businessRouter.patch('/suppliers/:id/status', async (req, res, next) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) { res.status(400).json({ message: 'Supplier ID is invalid.' }); return }
     const { status } = recordStatusInput.parse(req.body)
-    const supplier = await Supplier.findByIdAndUpdate(req.params.id, { $set: { status } }, { new: true, runValidators: true })
+    const supplier = await Supplier.findByIdAndUpdate(req.params.id, { $set: { status } }, { returnDocument: 'after', runValidators: true })
     if (!supplier) { res.status(404).json({ message: 'Supplier not found.' }); return }
     await recordAudit(String(req.authUser!.id), 'status_changed', 'supplier', String(supplier._id), `Updated supplier ${supplier.name} to ${status}`)
     res.json({ item: { id: String(supplier._id), name: supplier.name, status: supplier.status } })
@@ -488,7 +488,7 @@ businessRouter.patch('/inventory/:id', async (req, res, next) => {
     if (!mongoose.isValidObjectId(req.params.id)) { res.status(400).json({ message: 'Product ID is invalid.' }); return }
     const input = productInput.partial().parse(req.body)
     if (!Object.keys(input).length) { res.status(400).json({ message: 'Provide fields to update.' }); return }
-    const product = await Product.findByIdAndUpdate(req.params.id, { $set: input }, { new: true, runValidators: true })
+    const product = await Product.findByIdAndUpdate(req.params.id, { $set: input }, { returnDocument: 'after', runValidators: true })
     if (!product) { res.status(404).json({ message: 'Product not found.' }); return }
     await recordAudit(String(req.authUser!.id), 'updated', 'product', String(product._id), `Updated product ${product.sku}`)
     res.json({ item: { id: String(product._id), sku: product.sku, name: product.name } })
@@ -499,7 +499,7 @@ businessRouter.patch('/inventory/:id/status', async (req, res, next) => {
   try {
     if (!mongoose.isValidObjectId(req.params.id)) { res.status(400).json({ message: 'Product ID is invalid.' }); return }
     const { status } = recordStatusInput.parse(req.body)
-    const product = await Product.findByIdAndUpdate(req.params.id, { $set: { status } }, { new: true, runValidators: true })
+    const product = await Product.findByIdAndUpdate(req.params.id, { $set: { status } }, { returnDocument: 'after', runValidators: true })
     if (!product) { res.status(404).json({ message: 'Product not found.' }); return }
     await recordAudit(String(req.authUser!.id), 'status_changed', 'product', String(product._id), `Updated product ${product.sku} to ${status}`)
     res.json({ item: { id: String(product._id), sku: product.sku, status: product.status } })
@@ -894,7 +894,7 @@ async function voidMoney(
       const entry = await model.findOneAndUpdate(
         { _id: req.params.id, status: 'active' },
         { $set: { status: 'void' } },
-        { new: true, session },
+        { returnDocument: 'after', session },
       )
       if (!entry) return null
       await LedgerEntry.updateOne({ sourceType: entity, sourceId: entry._id }, { $set: { voidedAt: new Date() } }, { session })

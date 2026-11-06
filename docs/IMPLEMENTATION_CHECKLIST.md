@@ -37,7 +37,7 @@ Updated: 2026-11-04
 - [x] Add idempotency protection for customer payments and purchase receiving, including concurrent unique-key retries.
 - [x] Provide edit/deactivate workflows for suppliers and products in the UI; stock changes remain auditable adjustments.
 - [x] Add an isolated-database API integration suite for owner setup, invoice/payment idempotency, due caps, purchase stock/cost, void/reversal, reports, CSV safety, and account summaries.
-- [ ] Run the cross-tenant/accounting integration suite against a disposable replica set.
+- [x] Run the cross-tenant/accounting integration suite against a disposable replica set.
 
 ## Phase 4 — Frontend integration
 
@@ -55,7 +55,7 @@ Updated: 2026-11-04
 - [x] Derive cash/bank-by-method net movement from posted ledger entries and label that it excludes opening balances/transfers.
 - [ ] Reconcile invoices, payments, dues, expenses, income, purchases, cash, bank, and inventory against the approved workbook.
 - [x] Add transactional integration assertions for duplicate/idempotent writes, due caps, void/reversal, and stock/cost updates.
-- [ ] Execute the suite against a transaction-capable test database; `MONGODB_TEST_URI` was not available during this run.
+- [x] Execute the suite against a transaction-capable disposable test database.
 - [ ] Add opening balances, account transfers/reconciliation, cost-of-sales, and validated profit reporting only after policy approval.
 
 ## Phase 6 — Automation
