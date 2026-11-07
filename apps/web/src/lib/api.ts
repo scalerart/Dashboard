@@ -17,7 +17,9 @@ type QueryOptions = {
   path: string
   params?: Record<string, string>
   retry?: boolean | number
+  enabled?: boolean
   refetchInterval?: number | false
+  refetchOnWindowFocus?: boolean
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
@@ -60,14 +62,15 @@ async function upload<T>(path: string, body: FormData): Promise<T> {
 }
 
 export const api = {
-  useQuery<T>({ queryKey, path, params, retry = 1, refetchInterval }: QueryOptions) {
+  useQuery<T>({ queryKey, path, params, retry = 1, enabled = true, refetchInterval, refetchOnWindowFocus = false }: QueryOptions) {
     const query = params ? `?${new URLSearchParams(params)}` : ''
     return useTanstackQuery<T, Error>({
       queryKey,
       queryFn: () => request<T>(`${path}${query}`),
       retry,
+      enabled,
       refetchInterval,
-      refetchOnWindowFocus: false,
+      refetchOnWindowFocus,
     })
   },
   get: request,
@@ -78,5 +81,8 @@ export const api = {
   },
   patch<T>(path: string, body: unknown) {
     return request<T>(path, { method: 'PATCH', body: JSON.stringify(body) })
+  },
+  delete<T = void>(path: string) {
+    return request<T>(path, { method: 'DELETE' })
   },
 }

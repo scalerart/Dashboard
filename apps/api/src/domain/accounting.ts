@@ -4,12 +4,21 @@ export type InvoiceLineInput = {
   discountPercent?: number
 }
 
-export function calculateLineTotalMinor(quantity: number, unitPriceMinor: number, discountPercent = 0) {
+export function calculateLineGrossMinor(quantity: number, unitPriceMinor: number) {
   if (!Number.isFinite(quantity) || quantity <= 0 ||
-      !Number.isSafeInteger(unitPriceMinor) || unitPriceMinor < 0 ||
-      !Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
+      !Number.isSafeInteger(unitPriceMinor) || unitPriceMinor < 0) {
+    throw new RangeError('Line quantity or price is outside the supported range.')
+  }
+  const gross = Math.round(quantity * unitPriceMinor)
+  if (!Number.isSafeInteger(gross)) throw new RangeError('Line subtotal exceeds the safe integer range.')
+  return gross
+}
+
+export function calculateLineTotalMinor(quantity: number, unitPriceMinor: number, discountPercent = 0) {
+  if (!Number.isFinite(discountPercent) || discountPercent < 0 || discountPercent > 100) {
     throw new RangeError('Line quantity, price, or discount is outside the supported range.')
   }
+  calculateLineGrossMinor(quantity, unitPriceMinor)
   const lineTotal = Math.round(quantity * unitPriceMinor * (1 - discountPercent / 100))
   if (!Number.isSafeInteger(lineTotal)) {
     throw new RangeError('Line total exceeds the safe integer range.')
@@ -28,6 +37,16 @@ export function calculateInvoiceTotalMinor(lines: InvoiceLineInput[]) {
 
 export function outstandingMinor(totalMinor: number, paidMinor: number) {
   return Math.max(0, totalMinor - paidMinor)
+}
+
+export function calculateOrderTotalsMinor(grossMinor: number, discountMinor: number, advanceMinor: number) {
+  if (!Number.isSafeInteger(grossMinor) || grossMinor <= 0 ||
+      !Number.isSafeInteger(discountMinor) || discountMinor < 0 || discountMinor >= grossMinor ||
+      !Number.isSafeInteger(advanceMinor) || advanceMinor < 0 || advanceMinor > grossMinor - discountMinor) {
+    throw new RangeError('Order total, discount, or advance is outside the supported range.')
+  }
+  const totalMinor = grossMinor - discountMinor
+  return { totalMinor, dueMinor: totalMinor - advanceMinor }
 }
 
 export function weightedAverageCostMinor(

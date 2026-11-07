@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { calculateInvoiceTotalMinor, calculateLineTotalMinor, outstandingMinor, weightedAverageCostMinor } from './accounting.js'
+import { calculateInvoiceTotalMinor, calculateLineGrossMinor, calculateLineTotalMinor, calculateOrderTotalsMinor, outstandingMinor, weightedAverageCostMinor } from './accounting.js'
 
 test('invoice total uses integer minor currency units and line discounts', () => {
   assert.equal(
@@ -14,6 +14,7 @@ test('invoice total uses integer minor currency units and line discounts', () =>
 
 test('invoice line calculations reject unsafe totals and invalid amounts', () => {
   assert.throws(() => calculateLineTotalMinor(1_000_000, Number.MAX_SAFE_INTEGER), RangeError)
+  assert.throws(() => calculateLineGrossMinor(1_000_000, Number.MAX_SAFE_INTEGER), RangeError)
   assert.throws(() => calculateLineTotalMinor(1, -1), RangeError)
   assert.throws(() => calculateInvoiceTotalMinor([
     { quantity: 1, unitPriceMinor: Number.MAX_SAFE_INTEGER },
@@ -24,6 +25,12 @@ test('invoice line calculations reject unsafe totals and invalid amounts', () =>
 test('outstanding amount never becomes negative after overpayment', () => {
   assert.equal(outstandingMinor(10000, 3500), 6500)
   assert.equal(outstandingMinor(10000, 12000), 0)
+})
+
+test('order totals deduct discount and advance exactly in minor currency units', () => {
+  assert.deepEqual(calculateOrderTotalsMinor(12500, 2500, 5000), { totalMinor: 10000, dueMinor: 5000 })
+  assert.throws(() => calculateOrderTotalsMinor(10000, 10000, 0), RangeError)
+  assert.throws(() => calculateOrderTotalsMinor(10000, 500, 9501), RangeError)
 })
 
 test('weighted-average inventory cost combines existing stock and receipts', () => {

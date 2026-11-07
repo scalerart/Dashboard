@@ -1,6 +1,6 @@
 import mongoose from 'mongoose'
+import { normalizePhone } from './customer-validation.js'
 import {
-  AuditLog,
   Business,
   BusinessDocument,
   Counter,
@@ -34,12 +34,33 @@ const tenantModels = [
   LedgerEntry,
   StockMovement,
   SupplierPayment,
-  AuditLog,
   BusinessDocument,
   Counter,
 ]
 const unassignedTenantFilter = {
   $or: [{ businessId: { $exists: false } }, { businessId: null }],
+}
+
+async function backfillCustomerPhones() {
+  const customers = await Customer.collection.find(
+    {},
+    { projection: { _id: 1, businessId: 1, phone: 1, phoneNormalized: 1 } },
+  ).sort({ createdAt: 1, _id: 1 }).toArray()
+  const claimed = new Set<string>()
+  for (const customer of customers) {
+    const phoneNormalized = normalizePhone(String(customer.phone ?? ''))
+    const key = `${String(customer.businessId)}:${phoneNormalized}`
+    if (!phoneNormalized || claimed.has(key)) {
+      if (customer.phoneNormalized !== undefined) {
+        await Customer.collection.updateOne({ _id: customer._id }, { $unset: { phoneNormalized: 1 } })
+      }
+      continue
+    }
+    claimed.add(key)
+    if (customer.phoneNormalized !== phoneNormalized) {
+      await Customer.collection.updateOne({ _id: customer._id }, { $set: { phoneNormalized } })
+    }
+  }
 }
 
 export async function prepareTenantDatabase() {
@@ -83,6 +104,8 @@ export async function prepareTenantDatabase() {
       )
     }
   }
+
+  await backfillCustomerPhones()
 
   const counterCollection = mongoose.connection.collection<Record<string, unknown> & {
     _id: string
@@ -128,6 +151,20 @@ export async function initializeFreshTenantDatabase() {
   const legacyCounters = await Counter.collection.countDocuments({ _id: { $not: /^\w+:/ } })
   if (legacyUsers > 0 || legacyRecords > 0 || legacyCounters > 0) {
     throw new Error('Legacy tenant migration is required before the serverless API can start.')
+  }
+
+  const db = mongoose.connection.db
+  if (!db) throw new Error('MongoDB must be connected before initializing tenant indexes.')
+  const customerCollectionExists = await db.listCollections(
+    { name: Customer.collection.collectionName },
+    { nameOnly: true },
+  ).hasNext()
+  const phoneIndex = customerCollectionExists
+    ? (await Customer.collection.indexes()).find((index) => index.name === 'businessId_1_phoneNormalized_1')
+    : undefined
+  if (!phoneIndex?.unique) {
+    await backfillCustomerPhones()
+    await Customer.syncIndexes()
   }
 
   await Promise.all(

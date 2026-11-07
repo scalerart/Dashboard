@@ -11,6 +11,7 @@ import {
   X,
 } from 'lucide-react'
 import { lazy, Suspense, useMemo, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
 import { ApiError, api } from './lib/api'
 import { formatCurrency } from './lib/format'
 import type { DashboardData, User } from './types'
@@ -116,7 +117,7 @@ export default function DashboardPage({ user }: { user: User }) {
           </section>
 
           <section className="activity-grid">
-            <ActivityTable title="Recent orders & jobs" subtitle="Latest work created in this period" icon={ShoppingBag} emptyTitle="No orders yet" emptyText="Orders will appear here as your team records new work." rows={data.recentOrders.map((order) => ({
+            <ActivityTable title="Recent orders & jobs" subtitle="Latest work created in this period" icon={ShoppingBag} destination="/orders" emptyTitle="No orders yet" emptyText="Orders will appear here as your team records new work." rows={data.recentOrders.map((order) => ({
               id: order.orderNumber,
               name: order.customerName,
               detail: order.orderNumber,
@@ -124,7 +125,7 @@ export default function DashboardPage({ user }: { user: User }) {
               status: order.status,
               date: formatDate(order.orderDate),
             }))} />
-            <ActivityTable title="Recent payments" subtitle="Latest collections recorded" icon={CreditCard} emptyTitle="No payments yet" emptyText="Payments will appear here when collections are recorded." rows={data.recentPayments.map((payment) => ({
+            <ActivityTable title="Recent payments" subtitle="Latest collections recorded" icon={CreditCard} destination="/payments" emptyTitle="No payments yet" emptyText="Payments will appear here when collections are recorded." rows={data.recentPayments.map((payment) => ({
               id: payment.paymentNumber,
               name: payment.customerName,
               detail: `${payment.method} · ${payment.paymentNumber}`,
@@ -153,16 +154,18 @@ function MetricCard({ title, value, detail, icon: Icon, tone }: {
   </article>
 }
 
-function ActivityTable({ title, subtitle, icon: Icon, rows, emptyTitle, emptyText }: {
+function ActivityTable({ title, subtitle, icon: Icon, destination, rows, emptyTitle, emptyText }: {
   title: string
   subtitle: string
   icon: typeof ShoppingBag
+  destination: string
   rows: { id: string; name: string; detail: string; amount: string; status: string; date: string }[]
   emptyTitle: string
   emptyText: string
 }) {
+  const navigate = useNavigate()
   return <article className="panel activity-panel">
-    <div className="panel-heading"><div className="activity-title"><span className="activity-title-icon"><Icon size={16} /></span><span><h2>{title}</h2><p>{subtitle}</p></span></div><button className="text-button" type="button" disabled title="Order and payment management is coming in a subsequent phase">View all <ArrowUpRight size={14} /></button></div>
+    <div className="panel-heading"><div className="activity-title"><span className="activity-title-icon"><Icon size={16} /></span><span><h2>{title}</h2><p>{subtitle}</p></span></div><button className="text-button" type="button" onClick={() => navigate(destination)} aria-label={`View all ${title.toLowerCase()}`}>View all <ArrowUpRight size={14} /></button></div>
     {rows.length ? <div className="activity-list">
       {rows.map((row) => <div className="activity-row" key={row.id}>
         <div className="activity-main"><span className="activity-avatar">{row.name.slice(0, 1).toUpperCase()}</span><span className="activity-row-copy"><strong>{row.name}</strong><small>{row.detail}</small></span></div>

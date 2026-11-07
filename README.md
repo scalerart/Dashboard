@@ -6,9 +6,15 @@ A full-stack business management workspace for MAA Offset Press. This repository
 
 - Responsive application shell, keyboard-operable mobile navigation, persisted light/dark theme, owner sign-in/first-run setup, and opt-in email verification links for local demos.
 - A live dashboard backed by MongoDB aggregates for sales, collections, outstanding invoices, expenses, active customers, orders, recent activity, customer rankings, and monthly trends.
-- Customer directory with validated create/edit, search, status filters, pagination, and reversible archive/restore actions.
+- Customer directory with validated create/edit, search, status filters, pagination, reversible archive/restore actions, customer statements, PDF account reports, and per-invoice due collection.
 - Orders/jobs, invoices with PDF/email actions, customer payments, expenses, other income, inventory adjustments, editable supplier/product records, purchases, and supplier settlements backed by API workflows.
-- Ledger-derived cash/bank movement, date-filtered reports with CSV export, integration readiness, and owner-only data backup export.
+- Order entry captures customer name/address/mobile, task, quantity, total, discount, advance, and delivery date. It matches customers by normalized mobile number, calculates the remaining due, and creates the invoice and advance receipt together.
+- Orders expose invoice PDF, due collection from the order or customer account, and permanent deletion. Delete linked payment receipts first; each deletion recalculates invoice dues and removes its ledger movement before an order or invoice can be deleted.
+- SweetAlert2 confirmations protect permanent deletion of customers without orders, orders, invoices, payments, and expenses. A customer with any order cannot be deleted; deleting an orderless customer also removes their invoices, receipts, and related ledger entries.
+- Invoice PDFs use a polished teal/navy design with Bengali text, itemized totals, advances, later collections, amount due, and payment history. Date-filtered business reports use a redesigned financial summary and detailed tables; customer statements are available as PDFs too.
+- The “Need a hand?” sidebar opens in-app workflow guides for orders, customer statements, invoices, reports, and safe deletion.
+- Owner settings manage the business name, contact/address details, invoice footer, and workspace currency; those details are used on generated invoices and throughout the dashboard.
+- Ledger-derived cash/bank movement, date-filtered reports with PDF/CSV export, integration readiness, and owner-only data backup export.
 - Cookie-based authentication, password hashing, input validation, API rate limiting, and protected dashboard endpoints.
 - MongoDB-backed authentication rate limits shared across application instances.
 - Public business registration with email verification, one isolated tenant per business, and owner-specific business names.
@@ -64,11 +70,11 @@ Integration tests require `MONGODB_TEST_URI` pointing to a disposable, transacti
 - `POST /api/auth/register`, `POST /api/auth/verify-email`, `POST /api/auth/resend-verification` — create an isolated business and verify its owner email
 - `POST /api/auth/login` / `POST /api/auth/logout` / `GET /api/auth/me`
 - `GET /api/dashboard/summary?from=<ISO date>&to=<ISO date>` — authenticated, database-backed dashboard data
-- `GET /api/customers?search=<text>&status=active|inactive|all&page=1&limit=10` — authenticated customer directory
-- `POST /api/customers`, `PATCH /api/customers/:id`, `PATCH /api/customers/:id/status` — customer CRUD and archival
+- `GET /api/customers?search=<text>&status=active|inactive|all&page=1&limit=10`, `GET /api/customers/:id/statement`, `GET /api/customers/:id/statement/pdf` — customer directory and account reports
+- `POST /api/customers`, `PATCH /api/customers/:id`, `PATCH /api/customers/:id/status`, `DELETE /api/customers/:id` — customer CRUD and archival; deletion is blocked when orders exist
 - `/api/orders`, `/api/invoices`, `/api/payments`, `/api/expenses`, `/api/income`, `/api/inventory`, `/api/suppliers`, `/api/purchases` — authenticated business workflows
 - `GET /api/notifications` — tenant-scoped overdue invoice and low-stock alerts
-- `GET /api/accounts/summary`, `GET /api/reports/summary`, `GET /api/reports/summary.csv` — account movement and period reporting
+- `GET /api/accounts/summary`, `GET /api/reports/summary`, `GET /api/reports/summary.csv`, `GET /api/reports/summary.pdf` — account movement and period reporting
 - `GET /api/invoices/:id/pdf`, `POST /api/invoices/:id/email`, `GET /api/backup/export` — document, email, and owner-only backup actions
 
 See [docs/ARCHITECTURE.md](./docs/ARCHITECTURE.md) for the architecture and accounting boundaries, and [docs/IMPLEMENTATION_CHECKLIST.md](./docs/IMPLEMENTATION_CHECKLIST.md) for phase status.

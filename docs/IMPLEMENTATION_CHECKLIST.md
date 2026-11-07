@@ -1,6 +1,6 @@
 # Implementation checklist
 
-Updated: 2026-11-04
+Updated: 2026-11-06
 
 ## Phase 1 — Architecture
 
@@ -18,31 +18,35 @@ Updated: 2026-11-04
 - [x] Add an opt-in local-only terminal verification link for demos without SMTP; production configuration rejects the option.
 - [x] Block remote MongoDB access from local development by default to prevent accidental production database migrations.
 - [x] Persist authentication rate-limit counters in MongoDB so application instances share the limit.
-- [x] Customer directory with search, status filtering, pagination, create/edit, and archive/restore.
+- [x] Customer directory with search, status filtering, pagination, create/edit, archive/restore, PDF statements, invoice-linked collections, and guarded permanent deletion.
+- [x] Order form with mobile-based customer matching and live due calculation; invoice and advance receipt are generated automatically.
+- [x] Owner settings for business identity, invoice details, and workspace currency.
 - [x] Shared responsive pages for orders, invoices, payments, expenses, other income, inventory, suppliers, and purchases.
-- [x] Accounts, reports/CSV export, and settings/backup screens.
+- [x] Accounts, reports/PDF/CSV export, and settings/backup screens.
+- [x] Add an in-app help centre with workflow guides and quick navigation.
 - [x] WhatsApp automation excluded per requirement.
 - [ ] Recheck all authenticated module screens at mobile, tablet, and desktop sizes with a non-production test account.
 
 ## Phase 3 — Backend foundation
 
 - [x] Express API, MongoDB connection, health check, Mongoose models, validation, and protected routes.
-- [x] Password hashing, cookie sessions, rate limits, audit events, and explicit API errors.
+- [x] Password hashing, cookie sessions, rate limits, disabled audit-event persistence, and explicit API errors.
 - [x] Scope authenticated database queries, aggregates, idempotency records, counters, documents, and backups to the signed-in business.
 - [x] Customer create, update, list/search/filter/paginate, and reversible archive/restore.
-- [x] Order creation and status lifecycle; invoice issue/status/PDF/email; collections and due checks.
-- [x] Expense/other-income entry and void; supplier and product entry; inventory adjustment.
+- [x] Order creation/status lifecycle, invoice issue/status/PDF/email, collections, due checks, and protected permanent deletes for orders, invoices, payments, expenses, and eligible customers.
+- [x] Create order, customer match, invoice, and advance payment atomically; add audited cancellation that preserves paid accounting history.
+- [x] Expense/other-income entry and void; expense deletion with ledger reconciliation; supplier and product entry; inventory adjustment.
 - [x] Purchase receiving, weighted-average product cost, stock movements, and supplier settlement.
 - [x] Match the workbook's Rocket payment method alongside cash, bank, bKash, and Nagad.
 - [x] Add idempotency protection for customer payments and purchase receiving, including concurrent unique-key retries.
 - [x] Provide edit/deactivate workflows for suppliers and products in the UI; stock changes remain auditable adjustments.
-- [x] Add an isolated-database API integration suite for owner setup, invoice/payment idempotency, due caps, purchase stock/cost, void/reversal, reports, CSV safety, and account summaries.
-- [x] Run the cross-tenant/accounting integration suite against a disposable replica set.
+- [x] Add an isolated-database API integration suite for owner setup, invoice/payment idempotency, due caps, purchase stock/cost, void/reversal, report/PDF exports, permanent delete constraints/cascades, CSV safety, and account summaries.
+- [ ] Run the cross-tenant/accounting integration suite against a disposable replica set.
 
 ## Phase 4 — Frontend integration
 
 - [x] Connect authentication, dashboard, customers, and all listed business modules to MongoDB-backed API routes.
-- [x] Connect invoice PDF download/email, report summary/CSV, account movement summary, integration status, and owner backup export.
+- [x] Connect invoice/customer/report PDF, invoice email, report CSV, account movement summary, integration status, and owner backup export.
 - [x] Connect live tenant-scoped overdue-invoice and low-stock alerts to the application notification menu.
 - [x] Add loading, empty, retry/error, validation, and mutation feedback states.
 - [ ] Run authenticated end-to-end tests for signup/verification and create/list/action workflows in a disposable browser environment.
@@ -53,7 +57,7 @@ Updated: 2026-11-04
 - [x] Guard invoice and purchase line totals and weighted-average cost against unsafe integer overflow.
 - [x] Record customer collections, expenses, other income, supplier payments, and adjustments in the ledger.
 - [x] Derive cash/bank-by-method net movement from posted ledger entries and label that it excludes opening balances/transfers.
-- [ ] Reconcile invoices, payments, dues, expenses, income, purchases, cash, bank, and inventory against the approved workbook.
+- [ ] Reconcile invoices, payments, dues, expenses, income, purchases, cash, bank, and inventory against approved historical records; matching formulas and workbook-level order flow have been reviewed.
 - [x] Add transactional integration assertions for duplicate/idempotent writes, due caps, void/reversal, and stock/cost updates.
 - [x] Execute the suite against a transaction-capable disposable test database.
 - [ ] Add opening balances, account transfers/reconciliation, cost-of-sales, and validated profit reporting only after policy approval.
@@ -72,7 +76,7 @@ Updated: 2026-11-04
 
 ## Phase 7 — Testing and deployment
 
-- [x] API domain and tenant-context unit tests pass (13 passed); the MongoDB integration test skips unless `MONGODB_TEST_URI` is configured.
+- [x] API domain and tenant-context unit tests pass (15 passed); integration tests skip unless `MONGODB_TEST_URI` is configured.
 - [x] API and web production builds/type checks pass.
 - [x] API and web lint pass.
 - [x] API health endpoint reports MongoDB readiness and returns 503 when disconnected.

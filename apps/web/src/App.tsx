@@ -1,9 +1,11 @@
 import * as DropdownMenu from '@radix-ui/react-dropdown-menu'
+import * as Dialog from '@radix-ui/react-dialog'
 import { useQueryClient } from '@tanstack/react-query'
 import {
   ArrowDownRight,
   Banknote,
   Bell,
+  BookOpen,
   BriefcaseBusiness,
   ChartNoAxesCombined,
   CircleHelp,
@@ -25,6 +27,7 @@ import {
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { Navigate, Route, Routes, useLocation, useNavigate } from 'react-router-dom'
 import { api } from './lib/api'
+import { setCurrency } from './lib/format'
 import BrandMark from './BrandMark'
 import { useThemeStore } from './stores/theme'
 import type { User } from './types'
@@ -70,6 +73,7 @@ function AppLayout({ user }: { user: User }) {
   const [mobileNavOpen, setMobileNavOpen] = useState(false)
   const [signingOut, setSigningOut] = useState(false)
   const [accountMessage, setAccountMessage] = useState('')
+  const [helpOpen, setHelpOpen] = useState(false)
   const closeNavRef = useRef<HTMLButtonElement>(null)
   const menuButtonRef = useRef<HTMLButtonElement>(null)
   const navigate = useNavigate()
@@ -80,7 +84,21 @@ function AppLayout({ user }: { user: User }) {
   const notifications = api.useQuery<{
     items: { id: string; kind: 'overdue_invoice' | 'low_stock'; title: string; detail: string; href: string; occurredAt: string }[]
     total: number
-  }>({ queryKey: ['notifications', user.businessId], path: '/notifications', refetchInterval: 60_000 })
+  }>({
+    queryKey: ['notifications', user.businessId],
+    path: '/notifications',
+    refetchInterval: 60_000,
+    refetchOnWindowFocus: true,
+    retry: 2,
+  })
+  const businessSettings = api.useQuery<{ item: { name: string; currency: string } }>({
+    queryKey: ['business-settings', user.businessId],
+    path: '/business/settings',
+  })
+
+  useEffect(() => {
+    if (businessSettings.data?.item.currency) setCurrency(businessSettings.data.item.currency)
+  }, [businessSettings.data?.item.currency])
 
   useEffect(() => {
     if (!mobileNavOpen) return
@@ -143,8 +161,8 @@ function AppLayout({ user }: { user: User }) {
           <button ref={closeNavRef} className="icon-button sidebar-close" aria-label="Close navigation" onClick={() => setMobileNavOpen(false)}><X size={18} /></button>
         </div>
         <div className="workspace-switcher">
-          <span className="workspace-avatar">{user.businessName.slice(0, 1).toUpperCase()}</span>
-          <span><strong>{user.businessName}</strong><small>Business workspace</small></span>
+          <span className="workspace-avatar">{(businessSettings.data?.item.name ?? user.businessName).slice(0, 1).toUpperCase()}</span>
+          <span><strong>{businessSettings.data?.item.name ?? user.businessName}</strong><small>Business workspace</small></span>
           <ChevronDown size={15} />
         </div>
         <nav className="side-nav" aria-label="Main navigation">
@@ -173,10 +191,10 @@ function AppLayout({ user }: { user: User }) {
           </button>
           <button className={`nav-item nav-button ${location.pathname === '/settings' ? 'nav-item-active' : ''}`} type="button" aria-current={location.pathname === '/settings' ? 'page' : undefined} onClick={() => { navigate('/settings'); setMobileNavOpen(false) }}><Settings size={17} /><span>Settings</span>{location.pathname === '/settings' && <span className="nav-active-dot" />}</button>
         </nav>
-        <div className="sidebar-help">
+        <button className="sidebar-help" type="button" onClick={() => setHelpOpen(true)} aria-haspopup="dialog">
           <span className="help-icon"><CircleHelp size={17} /></span>
-          <div><strong>Need a hand?</strong><small>Help centre is coming soon</small></div>
-        </div>
+          <span><strong>Need a hand?</strong><small>Guides and common tasks</small></span>
+        </button>
         <div className="sidebar-profile">
           <span className="profile-avatar">{user.name.slice(0, 1).toUpperCase()}</span>
           <span className="profile-copy"><strong>{user.name}</strong><small>{user.role}</small></span>
@@ -245,12 +263,30 @@ function AppLayout({ user }: { user: User }) {
               : activeItem?.module ? <OperationsPage module={activeItem.module} />
                 : location.pathname === '/accounts' ? <AccountsPage />
                   : location.pathname === '/reports' ? <ReportsPage />
-                    : location.pathname === '/settings' ? <SettingsPage />
+                    : location.pathname === '/settings' ? <SettingsPage isOwner={user.role === 'owner'} businessId={user.businessId} />
                   : <DashboardPage user={user} />}
           </Suspense>
         </main>
-        <footer className="app-footer"><span>MAA Offset Press</span><span>Business workspace · {currentYear}</span></footer>
+        <footer className="app-footer"><span>{businessSettings.data?.item.name ?? user.businessName}</span><span>Business workspace · {currentYear}</span></footer>
       </div>
+      <Dialog.Root open={helpOpen} onOpenChange={setHelpOpen}>
+        <Dialog.Portal>
+          <Dialog.Overlay className="dialog-overlay" />
+          <Dialog.Content className="customer-dialog help-dialog">
+            <div className="dialog-heading">
+              <div><Dialog.Title>How can we help?</Dialog.Title><Dialog.Description>Quick guides for the everyday work in your business workspace.</Dialog.Description></div>
+              <Dialog.Close asChild><button className="icon-button" aria-label="Close help centre"><X size={18} /></button></Dialog.Close>
+            </div>
+            <div className="help-guide-list">
+              <section><span className="help-guide-icon"><ShoppingBag size={17} /></span><div><h3>Orders and customer payments</h3><p>Create an order with the customer’s mobile number. Existing customers are matched automatically. Record advances when the order is placed, then use <strong>Collect due</strong> in Orders or the customer account to post later payments to the correct invoice.</p><button className="button button-secondary" onClick={() => { setHelpOpen(false); navigate('/orders') }}>Open orders</button></div></section>
+              <section><span className="help-guide-icon"><Users size={17} /></span><div><h3>Customer statements</h3><p>Open a customer statement to review orders, invoices, receipts, and outstanding balances. Download the complete account statement as a PDF or collect an invoice balance from the same screen.</p><button className="button button-secondary" onClick={() => { setHelpOpen(false); navigate('/customers') }}>Open customers</button></div></section>
+              <section><span className="help-guide-icon"><FileText size={17} /></span><div><h3>Invoices and reports</h3><p>Download an invoice PDF from the Invoices list. Reports can be filtered by date and exported as PDF or CSV for sharing and filing.</p><button className="button button-secondary" onClick={() => { setHelpOpen(false); navigate('/reports') }}>Open reports</button></div></section>
+              <section><span className="help-guide-icon"><BookOpen size={17} /></span><div><h3>Deleting records safely</h3><p>Permanent deletion requires confirmation. Delete payment receipts first to recalculate the invoice balance and then remove its invoice or order. A customer with any order cannot be deleted; deleting a customer without orders also removes their invoices, receipts, and related ledger entries.</p></div></section>
+            </div>
+            <div className="help-dialog-footer"><CircleHelp size={15} /><span>Manage your business name, contact details, currency, and invoice footer in Settings.</span><button className="button button-secondary" onClick={() => { setHelpOpen(false); navigate('/settings') }}>Settings</button></div>
+          </Dialog.Content>
+        </Dialog.Portal>
+      </Dialog.Root>
     </div>
   )
 }

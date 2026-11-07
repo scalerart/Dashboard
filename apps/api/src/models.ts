@@ -22,6 +22,11 @@ const businessSchema = new Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 160 },
     owner: { type: Schema.Types.ObjectId, ref: 'User', required: true },
+    phone: { type: String, trim: true, default: '', maxlength: 40 },
+    email: { type: String, lowercase: true, trim: true, default: '', maxlength: 254 },
+    address: { type: String, trim: true, default: '', maxlength: 500 },
+    invoiceFooter: { type: String, trim: true, default: '', maxlength: 500 },
+    currency: { type: String, uppercase: true, trim: true, default: 'BDT', match: /^[A-Z]{3}$/ },
   },
   { timestamps: true },
 )
@@ -39,19 +44,33 @@ const customerSchema = new Schema(
   {
     name: { type: String, required: true, trim: true, maxlength: 160 },
     phone: { type: String, trim: true, default: '' },
+    phoneNormalized: { type: String, trim: true, default: undefined },
     email: { type: String, lowercase: true, trim: true, default: '' },
     address: { type: String, trim: true, default: '', maxlength: 500 },
     status: { type: String, enum: ['active', 'inactive'], default: 'active' },
   },
   { timestamps: true },
 )
+customerSchema.index(
+  { businessId: 1, phoneNormalized: 1 },
+  { unique: true, partialFilterExpression: { phoneNormalized: { $type: 'string' } } },
+)
 
 const orderSchema = new Schema(
   {
     orderNumber: { type: String, required: true, trim: true },
     customer: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
+    customerName: { type: String, trim: true, default: '', maxlength: 160 },
+    customerPhone: { type: String, trim: true, default: '', maxlength: 40 },
+    customerAddress: { type: String, trim: true, default: '', maxlength: 500 },
     description: { type: String, required: true, trim: true, maxlength: 500 },
+    quantity: { type: Number, required: true, default: 1, min: 0.001 },
+    grossMinor: { type: Number, min: 0 },
+    discountMinor: { type: Number, required: true, default: 0, min: 0 },
     amountMinor: { type: Number, required: true, min: 0 },
+    invoice: { type: Schema.Types.ObjectId, ref: 'Invoice' },
+    idempotencyKey: { type: String, trim: true, default: undefined, maxlength: 120 },
+    requestHash: { type: String, default: '' },
     status: {
       type: String,
       enum: ['pending', 'processing', 'printing', 'ready', 'delivered', 'cancelled'],
@@ -63,12 +82,20 @@ const orderSchema = new Schema(
   { timestamps: true },
 )
 orderSchema.index({ businessId: 1, orderNumber: 1 }, { unique: true })
+orderSchema.index(
+  { businessId: 1, idempotencyKey: 1 },
+  { unique: true, partialFilterExpression: { idempotencyKey: { $type: 'string' } } },
+)
 orderSchema.index({ orderDate: -1 })
 
 const invoiceSchema = new Schema(
   {
     invoiceNumber: { type: String, required: true, trim: true },
     customer: { type: Schema.Types.ObjectId, ref: 'Customer', required: true },
+    customerName: { type: String, trim: true, default: '', maxlength: 160 },
+    customerPhone: { type: String, trim: true, default: '', maxlength: 40 },
+    customerAddress: { type: String, trim: true, default: '', maxlength: 500 },
+    customerEmail: { type: String, lowercase: true, trim: true, default: '', maxlength: 254 },
     order: { type: Schema.Types.ObjectId, ref: 'Order' },
     lines: {
       type: [{
@@ -76,6 +103,8 @@ const invoiceSchema = new Schema(
         quantity: { type: Number, required: true, min: 0.001 },
         unitPriceMinor: { type: Number, required: true, min: 0 },
         discountPercent: { type: Number, default: 0, min: 0, max: 100 },
+        grossMinor: { type: Number, min: 0 },
+        discountMinor: { type: Number, min: 0 },
         totalMinor: { type: Number, required: true, min: 0 },
       }],
       required: true,

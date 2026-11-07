@@ -75,7 +75,7 @@ async function createBusinessOwner(input: z.infer<typeof setupSchema>) {
   const userId = new mongoose.Types.ObjectId()
   const businessId = new mongoose.Types.ObjectId()
   return withTransaction(async (session) => {
-    await Business.create([{ _id: businessId, name: input.businessName, owner: userId }], { session })
+    await Business.create([{ _id: businessId, name: input.businessName, owner: userId, currency: config.CURRENCY }], { session })
     await User.create([{
       _id: userId,
       businessId,

@@ -2,8 +2,9 @@ import { Router } from 'express'
 import mongoose from 'mongoose'
 import { z } from 'zod'
 import { config } from './config.js'
-import { calculateInvoiceTotalMinor, calculateLineTotalMinor, weightedAverageCostMinor } from './domain/accounting.js'
+import { calculateInvoiceTotalMinor, calculateLineGrossMinor, calculateLineTotalMinor, calculateOrderTotalsMinor, weightedAverageCostMinor } from './domain/accounting.js'
 import { csvCell } from './domain/csv.js'
+import { escapeRegex, normalizePhone } from './customer-validation.js'
 import {
   createSearchFilter,
   isMongoDuplicateKeyError,
@@ -16,6 +17,8 @@ import {
 import { requireAuth } from './middleware.js'
 import {
   AuditLog,
+  Business,
+  BusinessDocument,
   Customer,
   Expense,
   Income,
@@ -37,11 +40,30 @@ const amountQuantity = z.number().positive().max(1_000_000)
 const dateInput = z.coerce.date()
 
 const orderInput = z.object({
-  customerId: objectId,
+  customerId: objectId.optional(),
+  customerName: z.string().trim().min(2).max(160).optional(),
+  phone: z.string().trim().min(7).max(40).regex(/^[+\d()\s.-]+$/).optional(),
+  address: z.string().trim().max(500).default(''),
   description: z.string().trim().min(2).max(500),
   amountMinor: positiveMinor,
+  quantity: z.number().positive().max(1_000_000).default(1),
+  discountMinor: nonNegativeMinor.default(0),
+  advanceMinor: nonNegativeMinor.default(0),
+  advanceMethod: paymentMethodSchema.default('cash'),
   orderDate: dateInput.default(() => new Date()),
+  deliveryDate: dateInput.optional(),
   dueDate: dateInput.optional(),
+}).superRefine((input, context) => {
+  if (!input.customerId) {
+    if (!input.customerName) context.addIssue({ code: 'custom', path: ['customerName'], message: 'Customer name is required.' })
+    if (!input.phone || normalizePhone(input.phone).length < 7) context.addIssue({ code: 'custom', path: ['phone'], message: 'Enter a valid customer mobile number.' })
+  }
+  if (input.discountMinor >= input.amountMinor) {
+    context.addIssue({ code: 'custom', path: ['discountMinor'], message: 'Discount must be less than the total amount.' })
+  }
+  if (input.advanceMinor > input.amountMinor - input.discountMinor) {
+    context.addIssue({ code: 'custom', path: ['advanceMinor'], message: 'Advance cannot exceed the discounted order total.' })
+  }
 })
 const orderStatusInput = z.object({
   status: z.enum(['pending', 'processing', 'printing', 'ready', 'delivered', 'cancelled']),
@@ -115,32 +137,170 @@ const stockAdjustmentInput = z.object({
 
 const invoiceStatusInput = z.object({ status: z.enum(['sent', 'void']) })
 
+async function recordCustomerPayment(
+  input: {
+    customerId: mongoose.Types.ObjectId
+    invoiceId?: mongoose.Types.ObjectId
+    amountMinor: number
+    method: 'cash' | 'bank' | 'bkash' | 'nagad' | 'rocket' | 'other'
+    reference: string
+    receivedAt: Date
+    idempotencyKey?: string
+    requestHash?: string
+  },
+  actorId: string,
+  session: mongoose.ClientSession,
+) {
+  const invoice = input.invoiceId ? await Invoice.findById(input.invoiceId).session(session) : null
+  if (input.invoiceId && (
+    !invoice || String(invoice.customer) !== String(input.customerId) ||
+    ['draft', 'void'].includes(invoice.status)
+  )) {
+    throw new BusinessError(400, 'Choose a valid, issued invoice belonging to this customer.')
+  }
+  if (invoice && input.amountMinor > Math.max(0, invoice.totalMinor - invoice.paidMinor)) {
+    throw new BusinessError(400, 'Payment exceeds the invoice balance.')
+  }
+  const [payment] = await Payment.create([{
+    paymentNumber: await nextDocumentNumber('PAY', session),
+    customer: input.customerId,
+    ...(invoice ? { invoice: invoice._id } : {}),
+    amountMinor: input.amountMinor,
+    method: input.method,
+    reference: input.reference,
+    receivedAt: input.receivedAt,
+    ...(input.idempotencyKey ? { idempotencyKey: input.idempotencyKey, requestHash: input.requestHash } : {}),
+  }], { session })
+  if (invoice) {
+    invoice.paidMinor += input.amountMinor
+    invoice.status = invoice.paidMinor >= invoice.totalMinor ? 'paid' : 'partial'
+    await invoice.save({ session })
+  }
+  await LedgerEntry.create([{
+    entryNumber: await nextDocumentNumber('LED', session),
+    direction: 'in',
+    category: 'Customer payment',
+    description: `Receipt ${payment.paymentNumber}`,
+    amountMinor: payment.amountMinor,
+    paymentMethod: payment.method,
+    reference: payment.reference || payment.paymentNumber,
+    sourceType: 'payment',
+    sourceId: payment._id,
+    postedAt: payment.receivedAt,
+  }], { session })
+  await recordAudit(actorId, 'received', 'payment', String(payment._id), `Recorded ${payment.paymentNumber}`, session)
+  return payment
+}
+
+async function ensureOrderInvoice(
+  order: InstanceType<typeof Order>,
+  actorId: string,
+  session: mongoose.ClientSession,
+) {
+  const invoice = order.invoice
+    ? await Invoice.findById(order.invoice).session(session)
+    : await Invoice.findOne({ order: order._id }).session(session)
+  if (invoice) {
+    if (invoice.status !== 'void') {
+      if (!order.invoice || String(order.invoice) !== String(invoice._id)) {
+        order.invoice = invoice._id
+        await order.save({ session })
+      }
+      return invoice
+    }
+    if (order.invoice && String(order.invoice) === String(invoice._id)) {
+      order.invoice = undefined
+      await order.save({ session })
+    }
+    if (order.status === 'cancelled') throw new BusinessError(409, 'A cancelled order cannot receive a new invoice.')
+  }
+  if (order.status === 'cancelled') throw new BusinessError(409, 'A cancelled order cannot receive a new invoice.')
+  const customer = await Customer.findById(order.customer).session(session)
+  if (!customer) throw new BusinessError(404, 'The order customer no longer exists.')
+  const grossMinor = order.grossMinor ?? order.amountMinor
+  const discountMinor = order.discountMinor ?? 0
+  const quantity = order.quantity ?? 1
+  const [created] = await Invoice.create([{
+    invoiceNumber: await nextDocumentNumber('INV', session),
+    customer: customer._id,
+    customerName: order.customerName || customer.name,
+    customerPhone: order.customerPhone || customer.phone,
+    customerAddress: order.customerAddress || customer.address,
+    customerEmail: customer.email,
+    order: order._id,
+    lines: [{
+      description: order.description,
+      quantity,
+      unitPriceMinor: Math.round(grossMinor / quantity),
+      discountPercent: 0,
+      grossMinor,
+      discountMinor,
+      totalMinor: order.amountMinor,
+    }],
+    totalMinor: order.amountMinor,
+    paidMinor: 0,
+    issueDate: order.orderDate,
+    dueDate: order.dueDate,
+    notes: `Order ${order.orderNumber}`,
+    status: 'sent',
+  }], { session })
+  order.invoice = created._id
+  await order.save({ session })
+  await recordAudit(actorId, 'created', 'invoice', String(created._id), `Issued invoice ${created.invoiceNumber} for ${order.orderNumber}`, session)
+  return created
+}
+
 export const businessRouter = Router()
 businessRouter.use(requireAuth)
 
 businessRouter.get('/orders', async (req, res, next) => {
   try {
     const query = paginationSchema.parse(req.query)
+    const searchPattern = new RegExp(escapeRegex(query.search), 'i')
+    const matchingCustomers = query.search
+      ? await Customer.find({ $or: [{ name: searchPattern }, { phone: searchPattern }] }).distinct('_id')
+      : []
     const filter = {
-      ...createSearchFilter(query.search, ['orderNumber', 'description']),
+      ...(query.search ? { $or: [
+        { orderNumber: searchPattern },
+        { description: searchPattern },
+        { customer: { $in: matchingCustomers } },
+      ] } : {}),
+      status: { $ne: 'cancelled' },
       ...(query.from || query.to ? { orderDate: dateRange(query.from, query.to) } : {}),
     }
     const [items, total] = await Promise.all([
-      Order.find(filter).sort({ orderDate: -1 }).skip((query.page - 1) * query.limit).limit(query.limit).populate('customer', 'name').lean(),
+      Order.find(filter).sort({ orderDate: -1 }).skip((query.page - 1) * query.limit).limit(query.limit).populate('customer', 'name phone address').populate('invoice', 'invoiceNumber totalMinor paidMinor status').lean(),
       Order.countDocuments(filter),
     ])
     res.json({
-      items: items.map((item) => ({
+      items: items.map((item) => {
+        const linkedInvoice = item.invoice as unknown as { _id?: unknown; invoiceNumber?: string; totalMinor?: number; paidMinor?: number; status?: string } | null
+        const invoice = linkedInvoice?.status === 'void' ? null : linkedInvoice
+        const paidMinor = invoice?.paidMinor ?? 0
+        const totalMinor = invoice?.totalMinor ?? item.amountMinor
+        return {
         id: String(item._id),
         orderNumber: item.orderNumber,
         customerId: String(item.customer?._id ?? ''),
-        customerName: (item.customer as unknown as { name?: string } | null)?.name ?? 'Unknown customer',
+        customerName: item.customerName || (item.customer as unknown as { name?: string } | null)?.name || 'Unknown customer',
+        customerPhone: item.customerPhone || (item.customer as unknown as { phone?: string } | null)?.phone || '',
+        customerAddress: item.customerAddress || (item.customer as unknown as { address?: string } | null)?.address || '',
         description: item.description,
         amountMinor: item.amountMinor,
+        grossMinor: item.grossMinor ?? item.amountMinor,
+        discountMinor: item.discountMinor ?? 0,
+        quantity: item.quantity ?? 1,
+        paidMinor,
+        dueMinor: Math.max(0, totalMinor - paidMinor),
+        invoiceId: String(invoice?._id ?? ''),
+        invoiceNumber: invoice?.invoiceNumber ?? '',
         status: item.status,
         orderDate: item.orderDate,
         dueDate: item.dueDate,
-      })),
+        deliveryDate: item.dueDate,
+        }
+      }),
       pagination: pagination(query.page, query.limit, total),
     })
   } catch (error) { next(error) }
@@ -149,24 +309,142 @@ businessRouter.get('/orders', async (req, res, next) => {
 businessRouter.post('/orders', async (req, res, next) => {
   try {
     const input = orderInput.parse(req.body)
-    const customer = await Customer.findOne({ _id: input.customerId, status: 'active' }).lean()
-    if (!customer) {
-      res.status(400).json({ message: 'Select an active customer for this job.' })
+    const phoneNormalized = input.phone ? normalizePhone(input.phone) : ''
+    const totals = calculateOrderTotalsMinor(input.amountMinor, input.discountMinor, input.advanceMinor)
+    const existingKey = req.get('Idempotency-Key')
+    if (existingKey && !/^[\w.-]{8,120}$/.test(existingKey)) {
+      res.status(400).json({ message: 'Idempotency-Key must be 8–120 letters, digits, dots, underscores or hyphens.' })
       return
     }
-    const order = await withTransaction(async (session) => {
+    const requestHash = JSON.stringify({ ...input, phoneNormalized })
+    if (existingKey) {
+      const existing = await Order.findOne({ idempotencyKey: existingKey }).populate('invoice', 'invoiceNumber totalMinor paidMinor').lean()
+      if (existing) {
+        if (existing.requestHash !== requestHash) {
+          res.status(409).json({ message: 'This idempotency key was already used for a different order.' })
+          return
+        }
+        const invoice = existing.invoice as unknown as { _id?: unknown; invoiceNumber?: string; totalMinor?: number; paidMinor?: number } | null
+        res.status(200).json({ item: {
+          id: String(existing._id),
+          orderNumber: existing.orderNumber,
+          customerId: String(existing.customer),
+          invoiceId: String(invoice?._id ?? ''),
+          invoiceNumber: invoice?.invoiceNumber ?? '',
+          totalMinor: invoice?.totalMinor ?? existing.amountMinor,
+          paidMinor: invoice?.paidMinor ?? 0,
+          dueMinor: Math.max(0, (invoice?.totalMinor ?? existing.amountMinor) - (invoice?.paidMinor ?? 0)),
+          replayed: true,
+        } })
+        return
+      }
+    }
+    let order: { order: InstanceType<typeof Order>; invoice: InstanceType<typeof Invoice> }
+    try {
+      order = await withTransaction(async (session) => {
+      let customer
+      if (input.customerId) {
+        customer = await Customer.findOne({ _id: input.customerId, status: 'active' }).session(session)
+        if (!customer) throw new BusinessError(400, 'Select an active customer for this job.')
+      } else {
+        customer = await Customer.findOne({ phoneNormalized }).session(session)
+        if (!customer) {
+          const [createdCustomer] = await Customer.create([{
+            name: input.customerName!,
+            phone: input.phone!,
+            phoneNormalized,
+            address: input.address,
+          }], { session })
+          customer = createdCustomer
+        }
+      }
+      const customerName = input.customerName ?? customer.name
+      const customerPhone = input.phone ?? customer.phone
+      const customerAddress = input.customerId ? customer.address : input.address
       const [created] = await Order.create([{
         orderNumber: await nextDocumentNumber('ORD', session),
         customer: customer._id,
+        customerName,
+        customerPhone,
+        customerAddress,
         description: input.description,
-        amountMinor: input.amountMinor,
+        quantity: input.quantity,
+        grossMinor: input.amountMinor,
+        discountMinor: input.discountMinor,
+        amountMinor: totals.totalMinor,
+        ...(existingKey ? { idempotencyKey: existingKey, requestHash } : {}),
         orderDate: input.orderDate,
-        dueDate: input.dueDate,
+        dueDate: input.deliveryDate ?? input.dueDate,
       }], { session })
+      const invoice = await ensureOrderInvoice(created, String(req.authUser!.id), session)
+      if (input.advanceMinor > 0) {
+        await recordCustomerPayment({
+          customerId: customer._id,
+          invoiceId: invoice._id,
+          amountMinor: input.advanceMinor,
+          method: input.advanceMethod,
+          reference: `Advance for order ${created.orderNumber}`,
+          receivedAt: input.orderDate,
+        }, String(req.authUser!.id), session)
+        invoice.paidMinor += input.advanceMinor
+        invoice.status = invoice.paidMinor >= invoice.totalMinor ? 'paid' : 'partial'
+      }
       await recordAudit(String(req.authUser!.id), 'created', 'order', String(created._id), `Created job ${created.orderNumber}`, session)
-      return created
+      return { order: created, invoice }
+      })
+    } catch (error) {
+      if (existingKey && isMongoDuplicateKeyError(error)) {
+        const replay = await Order.findOne({ idempotencyKey: existingKey }).populate('invoice', 'invoiceNumber totalMinor paidMinor').lean()
+        if (replay) {
+          if (replay.requestHash !== requestHash) {
+            res.status(409).json({ message: 'This idempotency key was already used for a different order.' })
+            return
+          }
+          const invoice = replay.invoice as unknown as { _id?: unknown; invoiceNumber?: string; totalMinor?: number; paidMinor?: number } | null
+          res.status(200).json({ item: {
+            id: String(replay._id),
+            orderNumber: replay.orderNumber,
+            customerId: String(replay.customer),
+            invoiceId: String(invoice?._id ?? ''),
+            invoiceNumber: invoice?.invoiceNumber ?? '',
+            totalMinor: invoice?.totalMinor ?? replay.amountMinor,
+            paidMinor: invoice?.paidMinor ?? 0,
+            dueMinor: Math.max(0, (invoice?.totalMinor ?? replay.amountMinor) - (invoice?.paidMinor ?? 0)),
+            replayed: true,
+          } })
+          return
+        }
+      }
+      throw error
+    }
+    res.status(201).json({ item: {
+      id: String(order.order._id),
+      orderNumber: order.order.orderNumber,
+      customerId: String(order.order.customer),
+      invoiceId: String(order.invoice._id),
+      invoiceNumber: order.invoice.invoiceNumber,
+      totalMinor: order.invoice.totalMinor,
+      paidMinor: order.invoice.paidMinor,
+      dueMinor: Math.max(0, order.invoice.totalMinor - order.invoice.paidMinor),
+    } })
+  } catch (error) { next(error) }
+})
+
+businessRouter.post('/orders/:id/invoice', async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) throw new BusinessError(400, 'Order ID is invalid.')
+    const invoice = await withTransaction(async (session) => {
+      const order = await Order.findById(req.params.id).session(session)
+      if (!order) throw new BusinessError(404, 'Order not found.')
+      return ensureOrderInvoice(order, String(req.authUser!.id), session)
     })
-    res.status(201).json({ item: { id: String(order._id), orderNumber: order.orderNumber } })
+    res.status(200).json({ item: {
+      id: String(invoice._id),
+      invoiceNumber: invoice.invoiceNumber,
+      totalMinor: invoice.totalMinor,
+      paidMinor: invoice.paidMinor,
+      dueMinor: Math.max(0, invoice.totalMinor - invoice.paidMinor),
+    } })
   } catch (error) { next(error) }
 })
 
@@ -182,11 +460,41 @@ businessRouter.patch('/orders/:id/status', async (req, res, next) => {
       if (updated) await recordAudit(String(req.authUser!.id), 'status_changed', 'order', String(updated._id), `Updated ${updated.orderNumber} to ${status}`, session)
       return updated
     })
+
     if (!order) {
       res.status(404).json({ message: 'Order not found.' })
       return
     }
     res.json({ item: { id: String(order._id), orderNumber: order.orderNumber, status: order.status } })
+  } catch (error) { next(error) }
+})
+
+businessRouter.delete('/orders/:id', async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) throw new BusinessError(400, 'Order ID is invalid.')
+    await withTransaction(async (session) => {
+      const order = await Order.findById(req.params.id).session(session)
+      if (!order) throw new BusinessError(404, 'Order not found.')
+      const invoices = await Invoice.find({
+        $or: [{ order: order._id }, ...(order.invoice ? [{ _id: order.invoice }] : [])],
+      }).session(session)
+      const invoiceIds = invoices.map((invoice) => invoice._id)
+      if (invoices.some((invoice) => invoice.paidMinor > 0) ||
+        (invoiceIds.length && await Payment.exists({ invoice: { $in: invoiceIds } }).session(session))) {
+          throw new BusinessError(409, 'Delete this order’s payment receipts from Payments first. The order and its invoice can be deleted after their recorded payments are removed.')
+      }
+      if (invoiceIds.length) {
+        await BusinessDocument.deleteMany({ entityType: 'invoice', entityId: { $in: invoiceIds } }).session(session)
+        await Invoice.deleteMany({ _id: { $in: invoiceIds } }).session(session)
+      }
+      await BusinessDocument.deleteMany({ entityType: 'order', entityId: order._id }).session(session)
+      await Order.deleteOne({ _id: order._id }).session(session)
+      for (const invoice of invoices) {
+        await recordAudit(String(req.authUser!.id), 'deleted', 'invoice', String(invoice._id), `Permanently deleted invoice ${invoice.invoiceNumber}`, session)
+      }
+      await recordAudit(String(req.authUser!.id), 'deleted', 'order', String(order._id), `Permanently deleted order ${order.orderNumber}`, session)
+    })
+    res.status(204).end()
   } catch (error) { next(error) }
 })
 
@@ -205,8 +513,8 @@ businessRouter.get('/invoices', async (req, res, next) => {
       items: items.map((item) => ({
         id: String(item._id), invoiceNumber: item.invoiceNumber,
         customerId: String(item.customer?._id ?? ''),
-        customerName: (item.customer as unknown as { name?: string } | null)?.name ?? 'Unknown customer',
-        customerEmail: (item.customer as unknown as { email?: string } | null)?.email ?? '',
+        customerName: item.customerName || (item.customer as unknown as { name?: string } | null)?.name || 'Unknown customer',
+        customerEmail: item.customerEmail || (item.customer as unknown as { email?: string } | null)?.email || '',
         issueDate: item.issueDate, dueDate: item.dueDate, totalMinor: item.totalMinor,
         paidMinor: item.paidMinor, dueMinor: Math.max(0, item.totalMinor - item.paidMinor),
         status: item.status,
@@ -229,12 +537,15 @@ businessRouter.post('/invoices', async (req, res, next) => {
       res.status(400).json({ message: 'The selected job does not belong to this customer.' })
       return
     }
-    let lines: (typeof input.lines[number] & { totalMinor: number })[]
+    let lines: (typeof input.lines[number] & { grossMinor: number; discountMinor: number; totalMinor: number })[]
     let totalMinor: number
     try {
       lines = input.lines.map((line) => ({
         ...line,
+        grossMinor: calculateLineGrossMinor(line.quantity, line.unitPriceMinor),
         totalMinor: calculateLineTotalMinor(line.quantity, line.unitPriceMinor, line.discountPercent),
+        discountMinor: calculateLineGrossMinor(line.quantity, line.unitPriceMinor) -
+          calculateLineTotalMinor(line.quantity, line.unitPriceMinor, line.discountPercent),
       }))
       totalMinor = calculateInvoiceTotalMinor(input.lines)
     } catch (error) {
@@ -246,13 +557,28 @@ businessRouter.post('/invoices', async (req, res, next) => {
       return
     }
     const invoice = await withTransaction(async (session) => {
+      if (order) {
+        const currentOrder = await Order.findById(order._id).session(session)
+        if (!currentOrder) throw new BusinessError(404, 'The selected job no longer exists.')
+        const existingInvoice = currentOrder.invoice
+          ? await Invoice.findById(currentOrder.invoice).session(session)
+          : await Invoice.findOne({ order: currentOrder._id }).session(session)
+        if (existingInvoice && existingInvoice.status !== 'void') {
+          throw new BusinessError(409, 'This order already has an invoice.')
+        }
+      }
       const [created] = await Invoice.create([{
         invoiceNumber: await nextDocumentNumber('INV', session),
         customer: customer._id,
+        customerName: customer.name,
+        customerPhone: customer.phone,
+        customerAddress: customer.address,
+        customerEmail: customer.email,
         ...(order ? { order: order._id } : {}),
         lines, totalMinor, issueDate: input.issueDate, dueDate: input.dueDate,
         notes: input.notes, status: 'sent',
       }], { session })
+      if (order) await Order.updateOne({ _id: order._id }, { $set: { invoice: created._id } }, { session })
       await recordAudit(String(req.authUser!.id), 'created', 'invoice', String(created._id), `Issued invoice ${created.invoiceNumber}`, session)
       return created
     })
@@ -284,6 +610,40 @@ businessRouter.patch('/invoices/:id/status', async (req, res, next) => {
   } catch (error) { next(error) }
 })
 
+businessRouter.delete('/invoices/:id', async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) throw new BusinessError(400, 'Invoice ID is invalid.')
+    await withTransaction(async (session) => {
+      const invoice = await Invoice.findById(req.params.id).session(session)
+      if (!invoice) throw new BusinessError(404, 'Invoice not found.')
+      const order = invoice.order ? await Order.findById(invoice.order).session(session) : null
+      const invoices = order
+        ? await Invoice.find({ $or: [{ order: order._id }, { _id: invoice._id }] }).session(session)
+        : [invoice]
+      const invoiceIds = [...new Set(invoices.map((item) => String(item._id)))]
+      if (invoices.some((item) => item.paidMinor > 0) ||
+        await Payment.exists({ invoice: { $in: invoiceIds } }).session(session)) {
+        throw new BusinessError(409, 'Delete this invoice’s payment receipts from Payments first. The invoice and its order can be deleted after their recorded payments are removed.')
+      }
+      await BusinessDocument.deleteMany({
+        $or: [
+          { entityType: 'invoice', entityId: { $in: invoices.map((item) => item._id) } },
+          ...(order ? [{ entityType: 'order', entityId: order._id }] : []),
+        ],
+      }).session(session)
+      if (order) {
+        await Order.deleteOne({ _id: order._id }).session(session)
+        await recordAudit(String(req.authUser!.id), 'deleted', 'order', String(order._id), `Permanently deleted order ${order.orderNumber} with invoice ${invoice.invoiceNumber}`, session)
+      }
+      await Invoice.deleteMany({ _id: { $in: invoices.map((item) => item._id) } }).session(session)
+      for (const item of invoices) {
+        await recordAudit(String(req.authUser!.id), 'deleted', 'invoice', String(item._id), `Permanently deleted invoice ${item.invoiceNumber}`, session)
+      }
+    })
+    res.status(204).end()
+  } catch (error) { next(error) }
+})
+
 businessRouter.get('/payments', async (req, res, next) => {
   try {
     const query = paginationSchema.parse(req.query)
@@ -305,6 +665,42 @@ businessRouter.get('/payments', async (req, res, next) => {
       })),
       pagination: pagination(query.page, query.limit, total),
     })
+  } catch (error) { next(error) }
+})
+
+businessRouter.delete('/payments/:id', async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) throw new BusinessError(400, 'Payment ID is invalid.')
+    await withTransaction(async (session) => {
+      const payment = await Payment.findById(req.params.id).session(session)
+      if (!payment) throw new BusinessError(404, 'Payment not found.')
+      if (payment.invoice) {
+        const invoice = await Invoice.findById(payment.invoice).session(session)
+        if (invoice) {
+          invoice.paidMinor = Math.max(0, invoice.paidMinor - payment.amountMinor)
+          if (invoice.status === 'paid' || invoice.status === 'partial') {
+            invoice.status = invoice.paidMinor >= invoice.totalMinor
+              ? 'paid'
+              : invoice.paidMinor > 0
+                ? 'partial'
+                : invoice.dueDate && invoice.dueDate < new Date() ? 'overdue' : 'sent'
+          }
+          await invoice.save({ session })
+        }
+      }
+      await BusinessDocument.deleteMany({ entityType: 'payment', entityId: payment._id }).session(session)
+      await LedgerEntry.deleteOne({ sourceType: 'payment', sourceId: payment._id }).session(session)
+      await Payment.deleteOne({ _id: payment._id }).session(session)
+      await recordAudit(
+        String(req.authUser!.id),
+        'deleted',
+        'payment',
+        String(payment._id),
+        `Permanently deleted payment ${payment.paymentNumber} for ${payment.amountMinor} minor units`,
+        session,
+      )
+    })
+    res.status(204).end()
   } catch (error) { next(error) }
 })
 
@@ -338,40 +734,15 @@ businessRouter.post('/payments', async (req, res, next) => {
     }
     let result: InstanceType<typeof Payment>
     try {
-      result = await withTransaction(async (session) => {
-      let invoice
-      if (input.invoiceId) {
-        invoice = await Invoice.findById(input.invoiceId).session(session)
-        if (!invoice || String(invoice.customer) !== String(customer._id) || ['draft', 'void'].includes(invoice.status)) {
-          throw new BusinessError(400, 'Choose a valid, issued invoice belonging to this customer.')
-        }
-        const dueMinor = Math.max(0, invoice.totalMinor - invoice.paidMinor)
-        if (input.amountMinor > dueMinor) throw new BusinessError(400, 'Payment exceeds the invoice balance.')
-      }
-      const [payment] = await Payment.create([{
-        paymentNumber: await nextDocumentNumber('PAY', session),
-        customer: customer._id,
-        ...(invoice ? { invoice: invoice._id } : {}),
-        amountMinor: input.amountMinor, method: input.method,
-        reference: input.reference, receivedAt: input.receivedAt,
+      result = await withTransaction((session) => recordCustomerPayment({
+        customerId: customer._id,
+        ...(input.invoiceId ? { invoiceId: new mongoose.Types.ObjectId(input.invoiceId) } : {}),
+        amountMinor: input.amountMinor,
+        method: input.method,
+        reference: input.reference,
+        receivedAt: input.receivedAt,
         ...(existingKey ? { idempotencyKey: existingKey, requestHash } : {}),
-      }], { session })
-      if (invoice) {
-        invoice.paidMinor += input.amountMinor
-        invoice.status = invoice.paidMinor >= invoice.totalMinor ? 'paid' : 'partial'
-        await invoice.save({ session })
-      }
-      await LedgerEntry.create([{
-        entryNumber: await nextDocumentNumber('LED', session),
-        direction: 'in', category: 'Customer payment',
-        description: `Receipt ${payment.paymentNumber}`,
-        amountMinor: payment.amountMinor, paymentMethod: payment.method,
-        reference: payment.reference || payment.paymentNumber,
-        sourceType: 'payment', sourceId: payment._id, postedAt: payment.receivedAt,
-      }], { session })
-      await recordAudit(String(req.authUser!.id), 'received', 'payment', String(payment._id), `Recorded ${payment.paymentNumber}`, session)
-        return payment
-      })
+      }, String(req.authUser!.id), session))
     } catch (error) {
       if (existingKey && isMongoDuplicateKeyError(error)) {
         const replay = await Payment.findOne({ idempotencyKey: existingKey }).lean()
@@ -398,6 +769,20 @@ businessRouter.post('/expenses', async (req, res, next) => {
 })
 businessRouter.post('/expenses/:id/void', async (req, res, next) => {
   await voidMoney(req, res, next, Expense, 'expense', 'spentAt')
+})
+businessRouter.delete('/expenses/:id', async (req, res, next) => {
+  try {
+    if (!mongoose.isValidObjectId(req.params.id)) throw new BusinessError(400, 'Expense ID is invalid.')
+    await withTransaction(async (session) => {
+      const expense = await Expense.findById(req.params.id).session(session)
+      if (!expense) throw new BusinessError(404, 'Expense not found.')
+      await BusinessDocument.deleteMany({ entityType: 'expense', entityId: expense._id }).session(session)
+      await LedgerEntry.deleteOne({ sourceType: 'expense', sourceId: expense._id }).session(session)
+      await Expense.deleteOne({ _id: expense._id }).session(session)
+      await recordAudit(String(req.authUser!.id), 'deleted', 'expense', String(expense._id), `Permanently deleted expense: ${expense.description}`, session)
+    })
+    res.status(204).end()
+  } catch (error) { next(error) }
 })
 businessRouter.get('/income', async (req, res, next) => {
   await listMoney(req, res, next, Income, 'receivedAt')
@@ -769,30 +1154,32 @@ businessRouter.get('/reports/summary.csv', async (req, res, next) => {
     const range = z.object({ from: dateInput, to: dateInput }).parse(req.query)
     if (range.from > range.to) { res.status(400).json({ message: 'Report start date must be before its end date.' }); return }
     const period = { $gte: range.from, $lte: range.to }
-    const [invoiceRows, paymentRows, expenseRows, incomeRows, purchaseRows] = await Promise.all([
+    const [business, invoiceRows, paymentRows, expenseRows, incomeRows, purchaseRows] = await Promise.all([
+      Business.findById(req.authUser!.businessId).select('currency').lean(),
       Invoice.find({ issueDate: period, status: { $nin: ['draft', 'void'] } }).populate('customer', 'name').lean(),
       Payment.find({ receivedAt: period }).populate('customer', 'name').lean(),
       Expense.find({ spentAt: period, status: 'active' }).lean(),
       Income.find({ receivedAt: period, status: 'active' }).lean(),
       Purchase.find({ purchasedAt: period }).populate('supplier', 'name').lean(),
     ])
+    const currency = business?.currency ?? config.CURRENCY
     const rows: (string | number)[][] = [['Type', 'Date', 'Reference', 'Counterparty', 'Category', 'Amount', 'Currency', 'Status']]
     for (const invoice of invoiceRows) rows.push([
       'Invoice', invoice.issueDate.toISOString(), invoice.invoiceNumber,
       (invoice.customer as unknown as { name?: string } | null)?.name ?? '',
-      '', invoice.totalMinor / 100, config.CURRENCY, invoice.status,
+      '', invoice.totalMinor / 100, currency, invoice.status,
     ])
     for (const payment of paymentRows) rows.push([
       'Customer payment', payment.receivedAt.toISOString(), payment.paymentNumber,
       (payment.customer as unknown as { name?: string } | null)?.name ?? '',
-      payment.method, payment.amountMinor / 100, config.CURRENCY, 'received',
+      payment.method, payment.amountMinor / 100, currency, 'received',
     ])
-    for (const expense of expenseRows) rows.push(['Expense', expense.spentAt.toISOString(), expense.reference, '', expense.category, expense.amountMinor / 100, config.CURRENCY, 'active'])
-    for (const entry of incomeRows) rows.push(['Other income', entry.receivedAt.toISOString(), entry.reference, '', entry.category, entry.amountMinor / 100, config.CURRENCY, 'active'])
+    for (const expense of expenseRows) rows.push(['Expense', expense.spentAt.toISOString(), expense.reference, '', expense.category, expense.amountMinor / 100, currency, 'active'])
+    for (const entry of incomeRows) rows.push(['Other income', entry.receivedAt.toISOString(), entry.reference, '', entry.category, entry.amountMinor / 100, currency, 'active'])
     for (const purchase of purchaseRows) rows.push([
       'Purchase', purchase.purchasedAt.toISOString(), purchase.purchaseNumber,
       (purchase.supplier as unknown as { name?: string } | null)?.name ?? '',
-      '', purchase.totalMinor / 100, config.CURRENCY, purchase.status,
+      '', purchase.totalMinor / 100, currency, purchase.status,
     ])
     res.setHeader('Content-Type', 'text/csv; charset=utf-8')
     res.setHeader('Content-Disposition', `attachment; filename="maa-business-report-${range.from.toISOString().slice(0, 10)}-${range.to.toISOString().slice(0, 10)}.csv"`)

@@ -10,6 +10,7 @@ import { fileURLToPath } from 'node:url'
 import { ZodError } from 'zod'
 import { config } from './config.js'
 import { authRouter } from './auth.js'
+import { businessSettingsRouter } from './business-settings.js'
 import { businessRouter } from './business.js'
 import { customersRouter } from './customers.js'
 import { dashboardRouter } from './dashboard.js'
@@ -41,6 +42,7 @@ app.get('/api/health', (_req, res) => {
 })
 
 app.use('/api/auth', authRouter)
+app.use('/api', businessSettingsRouter)
 app.use('/api/dashboard', dashboardRouter)
 app.use('/api/customers', customersRouter)
 app.use('/api', businessRouter)
@@ -90,6 +92,11 @@ app.use((error: unknown, _req: express.Request, res: express.Response, next: exp
     res.status(409).json({ message: 'A record with the same unique value already exists.' })
     return
   }
+  if (isDatabaseUnavailable(error)) {
+    console.error('Database operation failed because MongoDB is unavailable.', error)
+    res.status(503).json({ message: 'The database is temporarily unavailable. Please try again shortly.' })
+    return
+  }
   if (typeof error === 'object' && error !== null && 'status' in error && 'message' in error) {
     const status = Number(error.status)
     if (Number.isInteger(status) && status >= 400 && status < 500) {
@@ -104,3 +111,13 @@ app.use((error: unknown, _req: express.Request, res: express.Response, next: exp
   console.error(error)
   res.status(500).json({ message: 'An unexpected server error occurred.' })
 })
+
+function isDatabaseUnavailable(error: unknown) {
+  if (typeof error !== 'object' || error === null || !('name' in error)) return false
+  return [
+    'MongoNetworkError',
+    'MongoServerSelectionError',
+    'MongoServerClosedError',
+    'MongoTopologyClosedError',
+  ].includes(String(error.name))
+}

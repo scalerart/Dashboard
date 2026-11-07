@@ -6,6 +6,7 @@ import { createInterface } from 'node:readline'
 import type { Server } from 'node:http'
 import test from 'node:test'
 import mongoose from 'mongoose'
+import { AuditLog } from './models.js'
 
 type JsonResult<T> = T
 
@@ -316,6 +317,10 @@ test('business workflows keep payments, inventory, reports, and ledger consisten
     const { item: expense } = await json<{ item: { id: string } }>(expenseResponse)
     const voidExpense = await request(`/expenses/${expense.id}/void`, { method: 'POST', body: {} })
     assert.equal(voidExpense.status, 200)
+    const deleteExpense = await request(`/expenses/${expense.id}`, { method: 'DELETE' })
+    assert.equal(deleteExpense.status, 204)
+    const expensesAfterDelete = await request('/expenses')
+    assert.equal((await json<{ items: { id: string }[] }>(expensesAfterDelete)).items.some((item) => item.id === expense.id), false)
 
     const incomeResponse = await request('/income', {
       method: 'POST',
@@ -337,6 +342,10 @@ test('business workflows keep payments, inventory, reports, and ledger consisten
     assert.equal(report.salesMinor, 11250)
     assert.equal(report.collectionsMinor, 5250)
     assert.equal(report.expenses.length, 0)
+    const reportPdf = await request(`/reports/summary.pdf?from=${from}&to=${to}`)
+    assert.equal(reportPdf.status, 200, await reportPdf.clone().text())
+    assert.match(reportPdf.headers.get('content-type') ?? '', /application\/pdf/)
+    assert.equal((await reportPdf.arrayBuffer()).byteLength > 1000, true)
 
     const csvResponse = await request(`/reports/summary.csv?from=${from}&to=${to}`)
     assert.equal(csvResponse.status, 200)
@@ -347,6 +356,205 @@ test('business workflows keep payments, inventory, reports, and ledger consisten
     assert.equal(accounts.inflowMinor, 5650)
     assert.equal(accounts.outflowMinor, 2000)
     assert.equal(accounts.netMovementMinor, 3650)
+
+    const businessSettings = await request('/business/settings')
+    assert.equal(businessSettings.status, 200)
+    const settings = await json<{ item: { name: string; currency: string } }>(businessSettings)
+    assert.equal(settings.item.name, 'Integration Business')
+    const updateSettings = await request('/business/settings', {
+      method: 'PATCH',
+      body: { name: 'Updated Integration Press', phone: '+880 1712-345678', address: 'Dhaka', currency: 'USD' },
+    })
+    assert.equal(updateSettings.status, 200)
+    assert.equal((await json<{ item: { name: string; currency: string } }>(updateSettings)).item.currency, 'USD')
+
+    const orderKey = `order-${randomUUID()}`
+    const orderInput = {
+      customerName: 'Order Flow Customer',
+      phone: '+880 1712-345678',
+      address: 'Dhaka',
+      description: 'Printed business cards',
+      quantity: 5,
+      amountMinor: 12500,
+      discountMinor: 2500,
+      advanceMinor: 5000,
+      advanceMethod: 'bkash',
+      orderDate: '2026-01-19T00:00:00.000Z',
+      deliveryDate: '2026-01-25T00:00:00.000Z',
+    }
+    const orderResponse = await request('/orders', { method: 'POST', body: orderInput, idempotencyKey: orderKey })
+    assert.equal(orderResponse.status, 201, await orderResponse.clone().text())
+    const { item: createdOrder } = await json<{
+      item: { id: string; customerId: string; invoiceId: string; invoiceNumber: string; totalMinor: number; paidMinor: number; dueMinor: number }
+    }>(orderResponse)
+    assert.equal(createdOrder.totalMinor, 10000)
+    assert.equal(createdOrder.paidMinor, 5000)
+    assert.equal(createdOrder.dueMinor, 5000)
+    const invoicePdf = await request(`/invoices/${createdOrder.invoiceId}/pdf`)
+    assert.equal(invoicePdf.status, 200, await invoicePdf.clone().text())
+    assert.match(invoicePdf.headers.get('content-type') ?? '', /application\/pdf/)
+    assert.equal((await invoicePdf.arrayBuffer()).byteLength > 1000, true)
+    const replayOrder = await request('/orders', { method: 'POST', body: orderInput, idempotencyKey: orderKey })
+    assert.equal(replayOrder.status, 200)
+    const replayOrderBody = await json<{ item: { id: string; replayed: boolean } }>(replayOrder)
+    assert.equal(replayOrderBody.item.id, createdOrder.id)
+    assert.equal(replayOrderBody.item.replayed, true)
+
+    const repeatCustomerOrder = await request('/orders', {
+      method: 'POST',
+      body: {
+        ...orderInput,
+        customerName: 'A different entered name',
+        phone: '01712345678',
+        description: 'Flyers',
+        amountMinor: 5000,
+        discountMinor: 0,
+        advanceMinor: 0,
+      },
+    })
+    assert.equal(repeatCustomerOrder.status, 201, await repeatCustomerOrder.clone().text())
+    const repeated = await json<{ item: { customerId: string } }>(repeatCustomerOrder)
+    assert.equal(repeated.item.customerId, createdOrder.customerId)
+    const customerLookup = await request(`/customers/lookup?phone=${encodeURIComponent('01712345678')}`)
+    assert.equal(customerLookup.status, 200)
+    const matchedCustomer = await json<{ item: { id: string; name: string; phone: string; email: string; address: string; status: string } | null }>(customerLookup)
+    assert.deepEqual(matchedCustomer.item, {
+      id: createdOrder.customerId,
+      name: 'Order Flow Customer',
+      phone: '+880 1712-345678',
+      email: '',
+      address: 'Dhaka',
+      status: 'active',
+    })
+    const matchedCustomers = await request('/customers?search=Order%20Flow%20Customer&status=all')
+    const customerList = await json<{ items: { id: string; orderCount: number }[] }>(matchedCustomers)
+    assert.equal(customerList.items.length, 1)
+    assert.equal(customerList.items[0].orderCount, 2)
+
+    const orderPayment = await request('/payments', {
+      method: 'POST',
+      body: {
+        customerId: createdOrder.customerId,
+        invoiceId: createdOrder.invoiceId,
+        amountMinor: createdOrder.dueMinor,
+        method: 'cash',
+        reference: 'Final order collection',
+      },
+      idempotencyKey: `order-payment-${randomUUID()}`,
+    })
+    assert.equal(orderPayment.status, 201)
+    const statementResponse = await request(`/customers/${createdOrder.customerId}/statement`)
+    assert.equal(statementResponse.status, 200)
+    const statement = await json<{
+      summary: { orderCount: number; invoicedMinor: number; invoicePaidMinor: number; dueMinor: number; paymentsReceivedMinor: number }
+    }>(statementResponse)
+    assert.equal(statement.summary.orderCount, 2)
+    assert.equal(statement.summary.invoicedMinor, 15000)
+    assert.equal(statement.summary.invoicePaidMinor, 10000)
+    assert.equal(statement.summary.dueMinor, 5000)
+    assert.equal(statement.summary.paymentsReceivedMinor, 10000)
+    const customerStatementPdf = await request(`/customers/${createdOrder.customerId}/statement/pdf`)
+    assert.equal(customerStatementPdf.status, 200, await customerStatementPdf.clone().text())
+    assert.match(customerStatementPdf.headers.get('content-type') ?? '', /application\/pdf/)
+    assert.equal((await customerStatementPdf.arrayBuffer()).byteLength > 1000, true)
+    const deleteCustomerWithOrders = await request(`/customers/${createdOrder.customerId}`, { method: 'DELETE' })
+    assert.equal(deleteCustomerWithOrders.status, 409)
+    const cancelPaidOrder = await request(`/orders/${createdOrder.id}`, { method: 'DELETE' })
+    assert.equal(cancelPaidOrder.status, 409)
+    const deletePaidInvoice = await request(`/invoices/${createdOrder.invoiceId}`, { method: 'DELETE' })
+    assert.equal(deletePaidInvoice.status, 409)
+
+    const unpaidOrderResponse = await request('/orders', {
+      method: 'POST',
+      body: {
+        ...orderInput,
+        description: 'Unpaid removable order',
+        phone: '+880 1812-345678',
+        amountMinor: 1000,
+        discountMinor: 0,
+        advanceMinor: 0,
+      },
+    })
+    assert.equal(unpaidOrderResponse.status, 201)
+    const { item: unpaidOrder } = await json<{ item: { id: string; customerId: string; invoiceId: string } }>(unpaidOrderResponse)
+    const beforePaymentDelete = await request('/accounts/summary')
+    const beforePaymentDeleteTotals = await json<{ inflowMinor: number }>(beforePaymentDelete)
+    const removablePaymentResponse = await request('/payments', {
+      method: 'POST',
+      body: {
+        customerId: unpaidOrder.customerId,
+        invoiceId: unpaidOrder.invoiceId,
+        amountMinor: 200,
+        method: 'cash',
+        reference: 'Payment deletion test',
+      },
+    })
+    assert.equal(removablePaymentResponse.status, 201)
+    const { item: removablePayment } = await json<{ item: { id: string } }>(removablePaymentResponse)
+    const deletePayment = await request(`/payments/${removablePayment.id}`, { method: 'DELETE' })
+    assert.equal(deletePayment.status, 204)
+    const afterPaymentDelete = await request('/accounts/summary')
+    assert.equal((await json<{ inflowMinor: number }>(afterPaymentDelete)).inflowMinor, beforePaymentDeleteTotals.inflowMinor)
+    const paymentAfterDelete = await request('/payments')
+    assert.equal((await json<{ items: { id: string }[] }>(paymentAfterDelete)).items.some((item) => item.id === removablePayment.id), false)
+    const invoiceAfterPaymentDelete = await request('/invoices')
+    const invoiceAfterPaymentDeleteResult = await json<{ items: { id: string; paidMinor: number; dueMinor: number }[] }>(invoiceAfterPaymentDelete)
+    assert.equal(
+      invoiceAfterPaymentDeleteResult.items.find((item) => item.id === unpaidOrder.invoiceId)?.paidMinor,
+      0,
+    )
+    assert.equal(
+      invoiceAfterPaymentDeleteResult.items.find((item) => item.id === unpaidOrder.invoiceId)?.dueMinor,
+      1000,
+    )
+    const deleteUnpaidOrder = await request(`/orders/${unpaidOrder.id}`, { method: 'DELETE' })
+    assert.equal(deleteUnpaidOrder.status, 204)
+    const ordersAfterCancel = await request('/orders')
+    assert.equal((await json<{ items: { id: string }[] }>(ordersAfterCancel)).items.some((item) => item.id === unpaidOrder.id), false)
+    const invoicesAfterCancel = await request('/invoices')
+    assert.equal((await json<{ items: { id: string; status: string }[] }>(invoicesAfterCancel)).items.some((item) => item.id === unpaidOrder.invoiceId), false)
+
+    const cleanupCustomerResponse = await request('/customers', {
+      method: 'POST',
+      body: { name: 'Removable Customer', phone: '01799990000', email: '', address: '' },
+    })
+    assert.equal(cleanupCustomerResponse.status, 201)
+    const { item: cleanupCustomer } = await json<{ item: { id: string } }>(cleanupCustomerResponse)
+    const removableInvoiceResponse = await request('/invoices', {
+      method: 'POST',
+      body: { customerId: cleanupCustomer.id, lines: [{ description: 'Unpaid proof', quantity: 1, unitPriceMinor: 1200, discountPercent: 0 }] },
+    })
+    assert.equal(removableInvoiceResponse.status, 201)
+    const { item: removableInvoice } = await json<{ item: { id: string } }>(removableInvoiceResponse)
+    const deleteStandaloneInvoice = await request(`/invoices/${removableInvoice.id}`, { method: 'DELETE' })
+    assert.equal(deleteStandaloneInvoice.status, 204)
+    const standaloneInvoiceAfterDelete = await request('/invoices')
+    assert.equal((await json<{ items: { id: string }[] }>(standaloneInvoiceAfterDelete)).items.some((item) => item.id === removableInvoice.id), false)
+    const secondRemovableInvoiceResponse = await request('/invoices', {
+      method: 'POST',
+      body: { customerId: cleanupCustomer.id, lines: [{ description: 'Customer cleanup proof', quantity: 1, unitPriceMinor: 1200, discountPercent: 0 }] },
+    })
+    assert.equal(secondRemovableInvoiceResponse.status, 201)
+    const { item: secondRemovableInvoice } = await json<{ item: { id: string } }>(secondRemovableInvoiceResponse)
+    const beforeCustomerPurge = await request('/accounts/summary')
+    const beforeCustomerPurgeTotals = await json<{ inflowMinor: number }>(beforeCustomerPurge)
+    const customerReceiptResponse = await request('/payments', {
+      method: 'POST',
+      body: { customerId: cleanupCustomer.id, invoiceId: secondRemovableInvoice.id, amountMinor: 300, method: 'cash', reference: 'Customer purge test' },
+    })
+    assert.equal(customerReceiptResponse.status, 201)
+    const { item: customerReceipt } = await json<{ item: { id: string } }>(customerReceiptResponse)
+    const deleteCustomerWithInvoice = await request(`/customers/${cleanupCustomer.id}`, { method: 'DELETE' })
+    assert.equal(deleteCustomerWithInvoice.status, 204)
+    const invoicesAfterCustomerDelete = await request('/invoices')
+    assert.equal((await json<{ items: { id: string }[] }>(invoicesAfterCustomerDelete)).items.some((item) => item.id === secondRemovableInvoice.id), false)
+    const paymentsAfterCustomerDelete = await request('/payments')
+    assert.equal((await json<{ items: { id: string }[] }>(paymentsAfterCustomerDelete)).items.some((item) => item.id === customerReceipt.id), false)
+    const afterCustomerPurge = await request('/accounts/summary')
+    assert.equal((await json<{ inflowMinor: number }>(afterCustomerPurge)).inflowMinor, beforeCustomerPurgeTotals.inflowMinor)
+    const deletedCustomerStatement = await request(`/customers/${cleanupCustomer.id}/statement`)
+    assert.equal(deletedCustomerStatement.status, 404)
+    assert.equal(await AuditLog.collection.countDocuments(), 0)
   } finally {
     try {
       if (server) await new Promise<void>((resolve, reject) => server!.close((error) => error ? reject(error) : resolve()))

@@ -18,6 +18,18 @@ export const customerQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(10),
 })
 
+export const customerLookupSchema = z.object({
+  phone: z.string().trim().min(7).max(40).regex(/^[+\d()\s.-]+$/),
+})
+
 export function escapeRegex(value: string) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+}
+
+export function normalizePhone(value: string) {
+  const digits = value.replace(/\D/g, '')
+  if (/^00880\d{10}$/.test(digits)) return `0${digits.slice(5)}`
+  if (/^880\d{10}$/.test(digits)) return `0${digits.slice(3)}`
+  if (/^\d{10}$/.test(digits)) return `0${digits}`
+  return digits
 }

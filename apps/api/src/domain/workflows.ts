@@ -1,6 +1,6 @@
 import mongoose, { type ClientSession } from 'mongoose'
 import { z } from 'zod'
-import { AuditLog, Counter } from '../models.js'
+import { Counter } from '../models.js'
 import { currentTenantId } from '../tenant-context.js'
 
 export const paymentMethodSchema = z.enum(['cash', 'bank', 'bkash', 'nagad', 'rocket', 'other'])
@@ -24,27 +24,26 @@ export async function nextDocumentNumber(prefix: string, session?: ClientSession
 }
 
 export async function recordAudit(
-  actorId: string,
-  action: string,
-  entity: string,
-  entityId: string,
-  summary: string,
-  session?: ClientSession,
-) {
-  await AuditLog.create(
-    [{ actor: new mongoose.Types.ObjectId(actorId), action, entity, entityId, summary }],
-    session ? { session } : {},
-  )
+  _actorId: string,
+  _action: string,
+  _entity: string,
+  _entityId: string,
+  _summary: string,
+  _session?: ClientSession,
+): Promise<void> {
+  return Promise.resolve()
 }
 
 export async function withTransaction<T>(work: (session: ClientSession) => Promise<T>) {
   const session = await mongoose.startSession()
   try {
-    let result: T | undefined
+    let result!: T
+    let completed = false
     await session.withTransaction(async () => {
       result = await work(session)
+      completed = true
     })
-    if (result === undefined) throw new Error('Transaction completed without a result.')
+    if (!completed) throw new Error('Database transaction completed without running its work callback.')
     return result
   } finally {
     await session.endSession()
