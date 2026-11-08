@@ -1,0 +1,47 @@
+{
+  "name": "@maa/api",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "tsx watch src/server.ts",
+    "build": "tsc -p tsconfig.json",
+    "start": "node dist/server.js",
+    "migrate:tenants": "node dist/migrate.js",
+    "lint": "oxlint src",
+    "test": "tsx --test src/**/*.test.ts",
+    "test:integration": "tsx --test src/business.integration.test.ts"
+  },
+  "dependencies": {
+    "@fontsource/noto-sans-bengali": "^5.3.0",
+    "archiver": "^8.0.0",
+    "bcryptjs": "latest",
+    "cloudinary": "^2.11.0",
+    "cookie-parser": "latest",
+    "cors": "latest",
+    "dotenv": "latest",
+    "express": "latest",
+    "express-rate-limit": "latest",
+    "helmet": "latest",
+    "jsonwebtoken": "latest",
+    "mongoose": "latest",
+    "multer": "^2.5.0",
+    "nodemailer": "^10.3.1",
+    "pdfkit": "^0.20.2",
+    "zod": "latest"
+  },
+  "devDependencies": {
+    "@types/archiver": "^8.0.0",
+    "@types/cookie-parser": "latest",
+    "@types/cors": "latest",
+    "@types/express": "latest",
+    "@types/jsonwebtoken": "latest",
+    "@types/multer": "^2.3.0",
+    "@types/node": "latest",
+    "@types/nodemailer": "^8.0.2",
+    "@types/pdfkit": "^0.17.7",
+    "oxlint": "latest",
+    "tsx": "latest",
+    "typescript": "latest"
+  }
+}
