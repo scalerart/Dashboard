@@ -1,6 +1,3 @@
-import dns from 'dns';
-dns.setServers(['8.8.8.8', '8.8.4.4']);
-
 import mongoose from 'mongoose';
 import { app } from './app.js';
 import { config } from './config.js';

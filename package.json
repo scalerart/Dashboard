@@ -7,7 +7,7 @@
     "apps/api"
   ],
   "scripts": {
-    "dev": "concurrently -k -n api,web -c blue,green \"npm:dev --workspace @maa/api\" \"npm:dev --workspace @maa/web\"",
+    "dev": "concurrently -k -n api,web -c blue,green \"npm --workspace=@maa/api run dev\" \"npm --workspace=@maa/web run dev\"",
     "build": "npm run build --workspace @maa/api && npm run build --workspace @maa/web",
     "lint": "npm run lint --workspace @maa/api && npm run lint --workspace @maa/web",
     "test": "npm run test --workspace @maa/api",

@@ -4,6 +4,8 @@ The repository is configured as one Render Web Service: Express serves both the 
 
 The deployment is not complete until the provider settings and launch checks below pass. Never commit secrets or paste them into chat. Rotate any password that has been shared.
 
+Each Render build installs from the committed lockfile, runs lint and API tests, then builds both workspaces. A failed check blocks deployment.
+
 ## 1. Prepare MongoDB Atlas
 
 1. Create a dedicated Atlas database for this app on a replica-set cluster that supports transactions. Invoice, payment, and purchase workflows use MongoDB transactions.
@@ -19,7 +21,7 @@ The deployment is not complete until the provider settings and launch checks bel
 3. Review the Blueprint service named `maa-offset-press`. Choose a paid service plan for an always-on production business app; free instances may sleep and have limited resources.
 4. Supply the prompted secret values privately in Render. The Blueprint generates a `JWT_SECRET`; keep it private and do not rotate it casually, since doing so invalidates existing sessions.
 5. Apply the Blueprint and wait for the build and deploy to finish. The service uses:
-   - Build: `npm ci --include=dev && npm run build`
+   - Build: `npm ci --include=dev && npm run lint && npm test && npm run build`
    - Start: `npm run start --workspace @maa/api`
    - Health check: `/api/health`
    - Node.js: the Node 22 range specified by the root `package.json`.
